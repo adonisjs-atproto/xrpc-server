@@ -1,0 +1,9 @@
+{{{
+  exports({ to: app.configPath('atproto_xrpc.ts') })
+}}}
+import { defineConfig } from '@thisismissem/adonisjs-atproto-xrpc'
+import env from '#start/env'
+
+export default defineConfig({
+
+})

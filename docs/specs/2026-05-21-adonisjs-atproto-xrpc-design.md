@@ -1455,7 +1455,7 @@ class ReportsTransformer extends BaseTransformer<Report> {
 
 The lexicon's `InferOutput<L>` is the ground truth for response shape. For v1, handler return types are loose at the contract boundary (`XrpcResponseBody<L>` admits any transformer contract); phase-2 codegen tightens this by emitting per-route return types that match `InferOutput<L>` field-by-field via the generated abstract base class.
 
-The `XrpcSerializer` is exposed as a config knob — consumers can supply their own subclass via `defineConfig({ serializer: MyCustomSerializer })` if they need to customize wrap keys or pagination metadata transformation. Most consumers won't.
+In v1, `XrpcSerializer` is internal-only — not re-exported from `index.ts`, no `defineConfig({ serializer })` consumer slot. The dispatch layer constructs a single instance directly via `new XrpcSerializer()`. Customization of the serializer (custom subclass via a config slot) is deferred to a future minor and is fully additive (see _Future work_). The serializer's pass-through Paginator handling matches `@adonisjs/inertia`'s `InertiaSerializer` — same `wrap = undefined` + identity `definePaginationMetaData` shape — so consumers wanting flat-shape XRPC pagination use `Transformer.transform(...)` embedded in a flat `{ cursor, <pluralized-lexicon-field>: ... }` object rather than `BaseTransformer.paginate(...)`. The package's `README.md` documents this pattern explicitly.
 
 ## Error handling
 
@@ -1866,6 +1866,8 @@ Items the package might grow into post-v1:
 - **Rate-limit middleware integration** — `@adonisjs/limiter` interop, per-route limits via a `.rateLimit(...)` chained method on the `XrpcRoute` builder (likely registered via `XrpcRoute.macro(...)` from the integration package itself, rather than shipping in this package directly) or via the `XrpcRouteGroup` handle for group-wide limits.
 
 - **Strict-mode auth declarations** — opt-in `defineConfig({ requireExplicitAuth: true })` flag that makes any route declaring neither `.serviceAuth()` nor an explicit `.public()` throw at `commit()`. Use case: Ozone-style services where most routes are authenticated and a missing declaration is more likely a forgotten `.serviceAuth()` than an intentionally-public route. The default stays public (aligning with the Lexicon spec's `auth: absent` default); strict-mode is a per-consumer audit-style affordance, not a posture flip.
+
+- **Custom serializer extension via `defineConfig({ serializer })`** — let consumers supply their own `XrpcSerializer` subclass to customize wrap keys, pagination metadata transformation, or contract-handling behavior. v1 ships the serializer as internal-only (`XrpcSerializer` constructed directly by the dispatch layer, not re-exported from `index.ts`) because no consumer use case has surfaced — the default pass-through serializer matches `@adonisjs/inertia`'s precedent and covers the canonical atproto pagination shape without customization. When a real need appears, the migration is purely additive: re-export `XrpcSerializer` from the package root, add a `serializer?: typeof XrpcSerializer` field to `XrpcConfig`, default to `XrpcSerializer` in `defineConfig`, and change the dispatch construction site from `new XrpcSerializer()` to `new config.serializer()`. Non-breaking in every direction.
 
 ## Related work
 

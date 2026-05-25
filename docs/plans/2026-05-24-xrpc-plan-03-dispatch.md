@@ -4,7 +4,7 @@
 
 **Goal:** Ship the dispatch layer — the shared executor that drives every registered XRPC handler, `XrpcServer` that owns the `@atcute/xrpc-server` `XRPCRouter` + WebSocket adapter, and `XrpcDispatchMiddleware` that intercepts `/xrpc/*` HTTP requests. After this plan, a hand-constructed `XrpcRouter` + `XrpcServer` pair can dispatch real HTTP procedures, HTTP queries, and WebSocket subscriptions end-to-end — without auth, without provider lifecycle, without error-reporter integration. Those land in Plans 04 (provider) and 05 (auth) by splicing into clean seams left here.
 
-**Architecture:** The atcute `XRPCRouter` and the `createNodeWebSocket()` helper share one executor function (registered once per route) — this is the closure-deduplication pattern locked in by the spec. The executor is auth-agnostic and error-reporter-agnostic (Plan 04 widens it for error reporting via `XrpcService`; Plan 05 widens it for auth via `XrpcAuth`). The HTTP-side path runs as Adonis server-level middleware in `start/kernel.ts`'s `server.use([...])` chain, short-circuiting on path match. The WebSocket-side path snips atcute's `'upgrade'` listener after `injectWebSocket` registers it and replaces it with a URL-filtering wrapper that establishes the synthetic HttpContext + ALS for `/xrpc/*` upgrades and falls through to other listeners (Vite HMR, app-defined WS endpoints) for everything else.
+**Architecture:** The atcute `XRPCRouter` and the `createNodeWebSocket()` helper share one executor function (registered once per route) — this is the closure-deduplication pattern locked in by the spec. The executor takes `(atcuteCtx, requestCtx: RequestContext)` — the second arg is materialized at the dispatch boundary on both paths, not read from any ALS inside the executor. `RequestContext` carries `{ requestId, request: HttpRequest, logger, containerResolver }` — the Adonis `HttpRequest` is the public-facing request surface (`ctx.request.validateUsing(...)` etc.), atcute's Fetch `Request` is an executor-internal detail. The executor is auth-agnostic and error-reporter-agnostic (Plan 04 widens it for error reporting via `XrpcService`; Plan 05 widens it for auth via `XrpcAuth`). The HTTP-side path runs as Adonis server-level middleware in `start/kernel.ts`'s `server.use([...])` chain — the middleware enters the package-internal `requestContextStore` with a `RequestContext` derived from the triggering `HttpContext` (via `fromHttpContext(ctx)`) and short-circuits on path match. The WebSocket-side path snips atcute's `'upgrade'` listener after `injectWebSocket` registers it and replaces it with a URL-filtering wrapper that builds a `RequestContext` directly from the upgrade `IncomingMessage` + `app` (the `HttpRequest` is constructed via `appServer.createRequest(req, synthRes)` — no synthetic `HttpContext`), enters `requestContextStore`, and falls through to other listeners (Vite HMR, app-defined WS endpoints) for non-XRPC URLs.
 
 **Tech Stack:** TypeScript (ESM), Node ≥24, `@atcute/xrpc-server` (new dep), `@atcute/xrpc-server-node` (new dep), `@adonisjs/core` (peer; for `HttpContext`, `Logger`, `ApplicationService`, `Server`), `@japa/runner` + `@japa/assert` for tests, real HTTP servers + a WebSocket client for functional tests.
 
@@ -18,7 +18,8 @@
 
 ### Create
 
-- `src/xrpc_server.ts` — `XrpcServer` class + `createXrpcExecutor` + `wrapSubscriptionIterator` + `httpContextStore` (the package-internal ALS for the subscription path). Controller resolution is **not** in this file — Plan 01's `XrpcRouter.#normalizeHandler` already ran at register time, so `route.handler` arrives pre-normalized.
+- `src/request_context.ts` — `RequestContext` type + `requestContextStore: AsyncLocalStorage<RequestContext>` (the package-internal ALS that bridges the dispatch boundary to the registered atcute closure — entered by the HTTP middleware on the procedure/query path, and by `#installWebSocketHandler` on the subscription path) + `fromHttpContext(httpCtx)` helper that materializes a `RequestContext` from an Adonis HttpContext. Lives in its own module (rather than inside `xrpc_server.ts`) so the three pieces stay grouped — both `XrpcServer` and `XrpcDispatchMiddleware` import from here.
+- `src/xrpc_server.ts` — `XrpcServer` class + `createXrpcExecutor` + `wrapSubscriptionIterator`. Imports `RequestContext` + `requestContextStore` from `./request_context.js`. Controller resolution is **not** in this file — Plan 01's `XrpcRouter.#normalizeHandler` already ran at register time, so `route.handler` arrives pre-normalized.
 - `src/middleware/dispatch.ts` — `XrpcDispatchMiddleware` (server-level middleware that intercepts `/xrpc/*`)
 - `providers/provider.ts` — minimal `XrpcProvider` that installs the `router.xrpc` Macroable getter + mounts the dispatch middleware (in `boot()`) and constructs/starts the `XrpcServer` (in `ready()`). Scope-limited for Plan 03; Plan 04 expands with `XrpcService` facade + error-reporter wiring + `HttpContext.xrpc` getter
 - `tests/provider.spec.ts` — unit tests verifying the provider installs the router getter, commits + starts XrpcServer on `ready()`, and skips wiring in non-web environments
@@ -187,19 +188,86 @@ git commit -m "feat(xrpc): add test_utils injection deps (@atcute/cbor, light-my
 
 ---
 
-## Task 2: Define the dispatch-layer types and stubs in `src/xrpc_server.ts`
+## Task 2: Define the dispatch-layer types and stubs
 
 **Files:**
 
-- Create: `src/xrpc_server.ts` (initial — types + `httpContextStore` + skeleton `XrpcServer` class with `start()` body stubbed to a TODO comment)
+- Create: `src/request_context.ts` — `RequestContext` type + `requestContextStore` ALS + `fromHttpContext` helper
+- Create: `src/xrpc_server.ts` (initial — skeleton `XrpcServer` class with `start()` body stubbed to a TODO comment, and a stub `createXrpcExecutor` factory; imports `RequestContext` + `requestContextStore` from `./request_context.js`)
 
-This task establishes the module shape so subsequent tasks (executor, WS handler, middleware) can import the right symbols without circular-dependency surprises. The file ends up containing both the `XrpcServer` class and the executor factory (per the spec's layout) — the file is small enough that splitting would be over-encapsulation.
+This task establishes the module shape so subsequent tasks (executor, WS handler, middleware) can import the right symbols without circular-dependency surprises. The `RequestContext` triplet (type + ALS + helper) gets its own module so the three pieces stay grouped — both `XrpcServer` and `XrpcDispatchMiddleware` (Task 7) import from it.
 
 **Steps:**
 
-- [ ] **Step 1: Create the initial `src/xrpc_server.ts`**
+- [ ] **Step 1a: Create `src/request_context.ts`**
 
-Create `src/xrpc_server.ts`:
+```ts
+/*
+|--------------------------------------------------------------------------
+| RequestContext — narrow per-request scope for the XRPC executor
+|--------------------------------------------------------------------------
+|
+| The dispatch executor receives a `RequestContext` as its second argument.
+| It carries just the request-scoped primitives the executor and downstream
+| handler need — not a full HttpContext.
+|
+| atcute's router has no per-request extension point, so both paths populate
+| the same package-internal ALS (`requestContextStore`) at the dispatch
+| boundary: the HTTP dispatch middleware enters it before calling
+| `xrpcRouter.fetch(...)` (with a RequestContext materialized from the
+| triggering HttpContext via `fromHttpContext`); the WS upgrade listener
+| enters it before delegating to atcute's captured listener (with a
+| RequestContext built directly from the upgrade IncomingMessage + app).
+| The registered atcute closure reads `requestContextStore.getStore()` for
+| either path and threads it into the executor explicitly.
+|
+| No synthetic HttpContext is constructed on the WS path;
+| `useAsyncLocalStorage: true` in `config/app.ts` is NOT required.
+*/
+
+import { AsyncLocalStorage } from 'node:async_hooks'
+import type { HttpContext, HttpRequest } from '@adonisjs/core/http'
+import type { Logger } from '@adonisjs/core/logger'
+import type { ContainerResolver } from '@adonisjs/core/types/container'
+
+/**
+ * The narrow per-request scope passed to the executor as `requestCtx`.
+ */
+export type RequestContext = {
+  requestId: string
+  request: HttpRequest // Adonis — surfaces on XrpcContext.request so handlers can
+  // use validateUsing / input / header / completeUrl / etc.
+  logger: Logger
+  containerResolver: ContainerResolver
+}
+
+/**
+ * Package-internal ALS that bridges the dispatch boundary (HTTP middleware
+ * or WS upgrade listener) to the registered atcute closure. The executor
+ * itself does NOT read from this store; it receives `requestCtx` explicitly.
+ */
+export const requestContextStore = new AsyncLocalStorage<RequestContext>()
+
+/**
+ * Materializes a `RequestContext` from an Adonis HttpContext. Used by the
+ * HTTP-path dispatch middleware to enter `requestContextStore` before
+ * calling `xrpcRouter.fetch(...)`.
+ */
+export function fromHttpContext(httpCtx: HttpContext): RequestContext {
+  // Fall back to crypto.randomUUID() if HttpRequest.id() returns undefined
+  // (consumer set `generateRequestId: false` or no x-request-id header on
+  // the request) — keeps RequestContext.requestId: string invariant for
+  // downstream code.
+  return {
+    requestId: httpCtx.request.id() ?? crypto.randomUUID(),
+    request: httpCtx.request,
+    logger: httpCtx.logger,
+    containerResolver: httpCtx.containerResolver,
+  }
+}
+```
+
+- [ ] **Step 1b: Create the initial `src/xrpc_server.ts`**
 
 ```ts
 /*
@@ -219,21 +287,15 @@ Create `src/xrpc_server.ts`:
 |    registry and the serializer; auth (Plan 05) and error reporting
 |    (Plan 04) splice in at clearly marked seams.
 |
-| The file also exports `httpContextStore`, the package-internal ALS the
-| subscription path uses to make a synthetic `HttpContext` available to
-| anything called downstream from a subscription handler. The HTTP path
-| reads from Adonis's own ALS via `HttpContext.getOrFail()` (which requires
-| `useAsyncLocalStorage: true` — verified by the configure command in
-| Plan 01).
+| RequestContext + requestContextStore + fromHttpContext live in
+| `./request_context.js` — both XrpcServer and XrpcDispatchMiddleware
+| import from there.
 */
 
-import { AsyncLocalStorage } from 'node:async_hooks'
 import type http from 'node:http'
 import { ServerResponse, type IncomingMessage } from 'node:http'
 import type { Duplex } from 'node:stream'
 import { RuntimeException } from '@poppinss/utils'
-import { HttpContext } from '@adonisjs/core/http'
-import { Logger } from '@adonisjs/core/logger'
 import type { ApplicationService } from '@adonisjs/core/types'
 import type { Server as AdonisServer } from '@adonisjs/core/services/server'
 
@@ -242,6 +304,7 @@ import type { XrpcLexicon } from './types.js'
 import type { XrpcSerializer } from './serializer.js'
 import { XrpcContext } from './context.js'
 import { XrpcError, InternalServerError, NotFoundError } from './errors.js'
+import { type RequestContext, requestContextStore } from './request_context.js'
 
 // Forward type-only references to atcute. Imports stay type-only so this
 // module's *runtime* dependency surface is just the constructor names; the
@@ -251,26 +314,19 @@ import type { XRPCRouter } from '@atcute/xrpc-server'
 import type { createNodeWebSocket } from '@atcute/xrpc-server-node'
 
 /**
- * The package-internal ALS used by the subscription path to expose a
- * synthetic `HttpContext` to anything called downstream from a subscription
- * handler. The HTTP-triggered path uses Adonis's own ALS via
- * `HttpContext.getOrFail()` (which requires `useAsyncLocalStorage: true`);
- * subscriptions can't enter that private ALS from outside, so we maintain
- * our own and the executor falls back to it when `HttpContext.getOrFail()`
- * is unavailable.
- */
-export const httpContextStore = new AsyncLocalStorage<HttpContext>()
-
-/**
  * The shared executor signature — one function per package instance,
- * registered with atcute for every route. The HTTP path returns the
- * serialized response body (atcute's `XRPCRouter` wraps it into a `Response`
- * downstream — handlers return values, not Responses). The subscription path
- * returns an `AsyncIterable` of messages.
+ * registered with atcute for every route. The HTTP path returns a `Response`:
+ * atcute's `XRPCRouter` checks `output instanceof Response` and silently
+ * substitutes `new Response(null)` for non-Response returns, so the executor
+ * MUST construct a Response itself — see Task 3's body for the conversion
+ * from `xrpcCtx.response.state` + serialized body. The subscription path
+ * returns an `AsyncIterable` of messages, which atcute iterates with
+ * `for await` for frame encoding.
  */
 export type SharedXrpcExecutor = (
-  atcuteCtx: any // refined to UnknownOperationContext | UnknownSubscriptionContext in Task 3
-) => Promise<unknown> | AsyncIterable<unknown>
+  atcuteCtx: any, // refined to UnknownOperationContext | UnknownSubscriptionContext in Task 3
+  requestCtx?: RequestContext
+) => Promise<Response> | AsyncIterable<unknown>
 
 /**
  * Dispatch orchestrator. Owns the atcute `XRPCRouter` and the WebSocket
@@ -330,24 +386,21 @@ Create `tests/xrpc_server.spec.ts`:
 
 ```ts
 import { test } from '@japa/runner'
-import { XrpcServer, createXrpcExecutor, httpContextStore } from '../src/xrpc_server.js'
+import { AsyncLocalStorage } from 'node:async_hooks'
+import { XrpcServer, createXrpcExecutor } from '../src/xrpc_server.js'
+import { requestContextStore, fromHttpContext } from '../src/request_context.js'
 
-test.group('xrpc_server module exports', () => {
-  test('exports XrpcServer class, createXrpcExecutor factory, and httpContextStore ALS', ({
-    assert,
-  }) => {
+test.group('dispatch module exports', () => {
+  test('xrpc_server.ts exports XrpcServer class + createXrpcExecutor factory', ({ assert }) => {
     assert.isFunction(XrpcServer, 'XrpcServer should be a class (function)')
     assert.isFunction(createXrpcExecutor, 'createXrpcExecutor should be a function')
-    assert.isObject(httpContextStore, 'httpContextStore should be an AsyncLocalStorage instance')
-    // AsyncLocalStorage has these specific methods:
-    assert.isFunction(
-      (httpContextStore as any).run,
-      'httpContextStore.run should exist (AsyncLocalStorage)'
-    )
-    assert.isFunction(
-      (httpContextStore as any).getStore,
-      'httpContextStore.getStore should exist (AsyncLocalStorage)'
-    )
+  })
+
+  test('request_context.ts exports requestContextStore ALS + fromHttpContext helper', ({
+    assert,
+  }) => {
+    assert.isFunction(fromHttpContext, 'fromHttpContext should be a function')
+    assert.instanceOf(requestContextStore, AsyncLocalStorage)
   })
 })
 ```
@@ -355,13 +408,13 @@ test.group('xrpc_server module exports', () => {
 - [ ] **Step 3: Run tests to verify they pass**
 
 Run: `pnpm quick:test --files tests/xrpc_server.spec.ts`
-Expected: PASS — 1 test (module shape). Other tests in the file land in subsequent tasks and don't exist yet.
+Expected: PASS — 2 tests (module shape per file). Other tests in the file land in subsequent tasks and don't exist yet.
 
 - [ ] **Step 4: Commit**
 
 ```bash
-git add src/xrpc_server.ts tests/xrpc_server.spec.ts
-git commit -m "feat(xrpc): scaffold dispatch module (XrpcServer skeleton + executor stub + httpContextStore)"
+git add src/request_context.ts src/xrpc_server.ts tests/xrpc_server.spec.ts
+git commit -m "feat(xrpc): scaffold dispatch module (request_context + XrpcServer skeleton + executor stub)"
 ```
 
 ---
@@ -373,17 +426,16 @@ git commit -m "feat(xrpc): scaffold dispatch module (XrpcServer skeleton + execu
 - Modify: `src/xrpc_server.ts` (replace the executor stub with the real implementation; the subscription branch lands in Task 4)
 - Modify: `tests/xrpc_server.spec.ts` (add executor tests)
 
-The executor is invoked by atcute for every dispatched route. It:
+The executor is invoked by atcute for every dispatched route. It takes `(atcuteCtx, requestCtx)` — `requestCtx?: RequestContext` (optional in the signature; the executor throws `InternalServerError` if it's missing) arrives materialized by the registered atcute closure (which reads `requestContextStore.getStore()`); the executor itself does NOT read from any ALS. It:
 
-1. Reads the `HttpContext` from Adonis's ALS via `HttpContext.get()` (HTTP path) with `httpContextStore.getStore()` as fallback (subscription path — Task 4). Plan 01's `XrpcRouter.#normalizeHandler` already ran at register time, so `route.handler` is the pre-normalized `NormalizedHandler` shape — the executor doesn't do its own handler resolution.
-2. Re-derives the NSID from the URL because atcute doesn't forward it to handlers.
-3. Looks up the matching `RouteInfo` from the operations registry.
-4. Constructs an `XrpcContext` (no `auth` field — Plan 05 splices it in via Macroable getter).
-5. Enters `XrpcContext.als` scope so downstream code can call `XrpcContext.getOrFail()`.
-6. Branches on `route.handler.kind`: `'function'` → `fn(ctx)`; `'controller'` → `handle(resolver, ctx)`. For procedure/query, awaits the result and serializes via `serializer.serializeWithoutWrapping(...)`; for subscription, branches to `wrapSubscriptionIterator(...)` (Task 4).
-7. On error, wraps non-`XrpcError` as `InternalServerError` and re-throws — atcute's `handleException` (configured at XRPCRouter construction in Plan 04) encodes the wire-format response.
+1. Re-derives the NSID from the URL because atcute doesn't forward it to handlers.
+2. Looks up the matching `RouteInfo` from the operations registry (Plan 01's `XrpcRouter.#normalizeHandler` already ran at register time, so `route.handler` is the pre-normalized `NormalizedHandler` shape — the executor doesn't do its own handler resolution).
+3. Constructs an `XrpcContext` from `route.lexicon`, `atcuteCtx`, and `requestCtx`'s `requestId` / `logger` / `containerResolver` (no `auth` field — Plan 05 splices it in via Macroable getter).
+4. Enters `XrpcContext.als` scope so downstream code can call `XrpcContext.getOrFail()`.
+5. Branches on `route.handler.kind`: `'function'` → `fn(ctx)`; `'controller'` → `handle(ctx.containerResolver, ctx)`. For procedure/query, awaits the result, picks the body source (handler return value, unless `xrpcCtx.response.state.bodySet` flags an explicit `.json(...)` override), serializes via `serializer.serializeWithoutWrapping(rawBody, xrpcCtx.containerResolver)`, and constructs a `Response` from `xrpcCtx.response.state` — `Response.redirect(...)` for the redirect case, otherwise `Response.json(serialized, { status, headers })`. The Response construction is mandatory: atcute's router silently substitutes `new Response(null)` for any non-Response return. For subscription, branches to `wrapSubscriptionIterator(xrpcCtx, ...)` (Task 4) — atcute iterates the AsyncIterable separately, no Response object needed. After `xrpcCtx` is constructed, `requestCtx` doesn't surface — every request-scoped read sources from `xrpcCtx`, which mirrors the same fields.
+6. On error, wraps non-`XrpcError` as `InternalServerError` and re-throws — atcute's `handleException` (configured at XRPCRouter construction in Plan 04) encodes the wire-format response.
 
-The error-reporting seam is a comment line: Plan 04 adds `await xrpc.getRegisteredErrorHandler()?.report(err, httpCtx)` before the `throw`. The auth pre-trigger seam is also a comment line: Plan 05 adds `if (route.auth.serviceAuth && !route.auth.optional) await auth.resolveOrFail()` after context construction.
+The error-reporting seam is a comment line: Plan 04 adds `await xrpc.getRegisteredErrorHandler()?.report(err, xrpcCtx)` before the `throw`. The auth pre-trigger seam is also a comment line: Plan 05 adds `if (route.auth.serviceAuth && !route.auth.optional) await auth.resolveOrFail()` after context construction.
 
 **Steps:**
 
@@ -402,18 +454,20 @@ export function createXrpcExecutor(deps: {
 }): SharedXrpcExecutor {
   const { operations, serializer } = deps
 
-  return async (atcuteCtx) => {
-    // HTTP path: Adonis's ALS via HttpContext.get() (returns null when no
-    // ALS scope is active — doesn't throw). Subscription path: the package's
-    // own ALS, populated by `XrpcServer.#installWebSocketHandler` before
-    // atcute's adapter runs. The `??` is the boundary between the two.
-    // `useAsyncLocalStorage: true` is enforced at `XrpcServer.start()`, so
-    // HttpContext.get() returning null inside the HTTP path means we got
-    // dispatched outside any request — a real bug, not a config issue.
-    const httpCtx = HttpContext.get() ?? httpContextStore.getStore()
-    if (!httpCtx) {
+  return async (atcuteCtx, requestCtx) => {
+    // `requestCtx` arrives materialized — by the HTTP dispatch middleware on
+    // the procedure/query path, by `#installWebSocketHandler` on the WS path.
+    // The registered atcute closure reads `requestContextStore.getStore()`
+    // and passes it through. No ALS read inside the executor.
+    //
+    // The parameter is typed optional (`requestCtx?`) so the registered
+    // closure doesn't need a non-null assertion at the call site. If
+    // `getStore()` returns undefined here, a dispatch boundary failed to
+    // populate the store — surface a precise diagnostic instead of a
+    // downstream `undefined.requestId` TypeError.
+    if (!requestCtx) {
       throw new InternalServerError(
-        'XRPC executor invoked outside both Adonis HttpContext ALS and the subscription ALS'
+        'XRPC executor invoked without a RequestContext — the dispatch boundary failed to populate requestContextStore'
       )
     }
 
@@ -442,15 +496,19 @@ export function createXrpcExecutor(deps: {
     // and the per-route `auth` flag is unused at dispatch time.
 
     const xrpcCtx = new XrpcContext({
-      httpCtx,
+      requestId: requestCtx.requestId,
+      request: requestCtx.request, // Adonis HttpRequest; atcute's Fetch Request is internal
+      logger: requestCtx.logger,
+      containerResolver: requestCtx.containerResolver,
       lexicon: route.lexicon,
-      request: atcuteCtx.request,
       input: 'input' in atcuteCtx ? atcuteCtx.input : undefined,
       params: atcuteCtx.params,
       signal: atcuteCtx.signal,
     })
-
-    httpCtx.containerResolver.bindValue(XrpcContext, xrpcCtx)
+    // `xrpcCtx.response` is constructed inside XrpcContext's constructor —
+    // XrpcStream for subscription routes (signal threaded through),
+    // XrpcResponse (with default state) for procedure/query. See Plan 01's
+    // src/context.ts for the branching logic.
 
     // `route.handler` is already the normalized form — Plan 01's
     // `XrpcRouter.#normalizeHandler` ran at register time, so eager class
@@ -459,7 +517,7 @@ export function createXrpcExecutor(deps: {
     const invokeHandler = (ctx: XrpcContext<XrpcLexicon>): unknown =>
       route.handler.kind === 'function'
         ? route.handler.fn(ctx)
-        : route.handler.handle(httpCtx.containerResolver, ctx)
+        : route.handler.handle(ctx.containerResolver, ctx)
 
     // HTTP path: enter the XrpcContext ALS scope and await the handler. The
     // `await` continuations re-enter the scope on each microtask boundary, so
@@ -479,18 +537,43 @@ export function createXrpcExecutor(deps: {
         xrpcCtx,
         () => invokeHandler(xrpcCtx) as AsyncIterable<unknown>
       )
-      return wrapSubscriptionIterator(userIterable, xrpcCtx, httpCtx, serializer)
+      return wrapSubscriptionIterator(userIterable, xrpcCtx, serializer)
     }
 
     return XrpcContext.als.run(xrpcCtx, async () => {
       try {
         const result = await invokeHandler(xrpcCtx)
-        return await serializer.serializeWithoutWrapping(result, httpCtx.containerResolver)
+
+        // atcute's router (verified against `xrpc-server/lib/main/router.ts`
+        // on trunk, addQuery + addProcedure) inspects the handler's return
+        // value with `output instanceof Response` and silently falls back to
+        // `new Response(null)` for non-Response returns. We construct the
+        // Response here so clients receive the actual serialized body.
+        const respState = xrpcCtx.response.state
+
+        if (respState.redirect) {
+          return Response.redirect(respState.redirect.url, respState.redirect.status)
+        }
+
+        // `.json(value)` override wins over the handler's return value.
+        // The handler may have called .json() and then continued doing
+        // post-response work (e.g. queueing a job) before returning void —
+        // `bodySet` (not `body !== undefined`) is the discriminator so
+        // `.json(null)` differs from "never called".
+        const rawBody = respState.bodySet ? respState.body : result
+        const serialized = await serializer.serializeWithoutWrapping(
+          rawBody,
+          xrpcCtx.containerResolver
+        )
+        return Response.json(serialized, {
+          status: respState.status ?? 200,
+          headers: respState.headers,
+        })
       } catch (err: any) {
         const xrpcError =
           err instanceof XrpcError ? err : new InternalServerError(err?.message ?? String(err))
         // ERROR-REPORTING SEAM (Plan 04): call
-        //   `await xrpc.getRegisteredErrorHandler()?.report(err, httpCtx)`
+        //   `await xrpc.getRegisteredErrorHandler()?.report(err, xrpcCtx)`
         // here (procedure/query path). The subscription branch in Task 4 has
         // the mirror seam for `getRegisteredSubscriptionErrorHandler()`.
         throw xrpcError
@@ -503,7 +586,6 @@ export function createXrpcExecutor(deps: {
 async function* wrapSubscriptionIterator(
   _iterable: AsyncIterable<unknown>,
   _xrpcCtx: XrpcContext<XrpcLexicon>,
-  _httpCtx: HttpContext,
   _serializer: XrpcSerializer
 ): AsyncGenerator<unknown> {
   throw new RuntimeException('wrapSubscriptionIterator() not yet implemented (Plan 03 Task 4)')
@@ -515,7 +597,8 @@ async function* wrapSubscriptionIterator(
 Append to `tests/xrpc_server.spec.ts`:
 
 ```ts
-import { createXrpcExecutor, httpContextStore } from '../src/xrpc_server.js'
+import { createXrpcExecutor } from '../src/xrpc_server.js'
+import { fromHttpContext, type RequestContext } from '../src/request_context.js'
 import { XrpcSerializer } from '../src/serializer.js'
 import { setupApp } from './helpers.js'
 import { HttpContextFactory } from '@adonisjs/core/factories/http'
@@ -528,6 +611,17 @@ const PING_LEXICON = {
   type: 'xrpc_procedure',
   defs: { main: { type: 'procedure', input: {}, output: {} } },
 } as const
+
+// Construct a RequestContext the same way the HTTP-path dispatch
+// middleware does — `fromHttpContext(httpCtx)`. This exercises the real
+// materialization helper end-to-end, catching shape drift if `HttpContext`'s
+// API moves. The factory's defaults (`generateRequestId: false`, no
+// `x-request-id` header) mean `requestCtx.requestId` is `undefined` here —
+// tests that care about a specific request ID assert against
+// `requestCtx.requestId` rather than a hardcoded string.
+function makeRequestCtx(): RequestContext {
+  return fromHttpContext(new HttpContextFactory().create())
+}
 
 test.group('createXrpcExecutor — HTTP procedure path', (group) => {
   group.each.setup(() => setupApp({ environment: 'web' }))
@@ -557,10 +651,7 @@ test.group('createXrpcExecutor — HTTP procedure path', (group) => {
       serializer: new XrpcSerializer(),
     })
 
-    // Construct a minimal HttpContext and bind it to the ALS the executor
-    // reads from. Tests for the executor exercise its dispatch shape, not
-    // the surrounding Adonis pipeline; the synthetic HttpContext is fine.
-    const httpCtx = new HttpContextFactory().create()
+    const requestCtx = makeRequestCtx()
     const atcuteCtx = {
       request: new Request('http://localhost/xrpc/com.example.ping', {
         method: 'POST',
@@ -572,10 +663,92 @@ test.group('createXrpcExecutor — HTTP procedure path', (group) => {
       signal: new AbortController().signal,
     }
 
-    const result = await httpContextStore.run(httpCtx, () => executor(atcuteCtx))
+    const response = (await executor(atcuteCtx, requestCtx)) as Response
 
     assert.equal(invocations, 1, 'inline handler called exactly once')
-    assert.deepEqual(result, { pong: true, requestId: httpCtx.request.id() })
+    assert.instanceOf(response, Response)
+    assert.equal(response.status, 200, 'default status is 200 when handler does not set one')
+    assert.equal(response.headers.get('content-type'), 'application/json')
+    // requestCtx.requestId is undefined here (HttpContextFactory defaults
+    // `generateRequestId: false` and provides no `x-request-id` header) —
+    // assert against the materialized value rather than a hardcoded string.
+    const body = await response.json()
+    assert.deepEqual(body, { pong: true, requestId: requestCtx.requestId })
+  })
+
+  test('honors status / header / json overrides set via ctx.response', async ({
+    assert,
+    app,
+  }) => {
+    const executor = createXrpcExecutor({
+      operations: new Map([
+        [
+          PING_LEXICON.id,
+          {
+            lexicon: PING_LEXICON as any,
+            handler: {
+              kind: 'function' as const,
+              fn: (ctx: any) => {
+                ctx.response.status(201).header('etag', 'W/"abc"').json({ created: true })
+                // handler returns undefined — explicit json() override is what
+                // the executor uses as the body
+              },
+            },
+            auth: { serviceAuth: false, optional: false },
+          },
+        ],
+      ]),
+      serializer: new XrpcSerializer(),
+    })
+
+    const requestCtx = makeRequestCtx()
+    const atcuteCtx = {
+      request: new Request('http://localhost/xrpc/com.example.ping', { method: 'POST' }),
+      input: {},
+      params: {},
+      signal: new AbortController().signal,
+    }
+
+    const response = (await executor(atcuteCtx, requestCtx)) as Response
+
+    assert.equal(response.status, 201)
+    assert.equal(response.headers.get('etag'), 'W/"abc"')
+    assert.deepEqual(await response.json(), { created: true })
+  })
+
+  test('redirect via ctx.response.redirect(url, status) returns a 3xx Response', async ({
+    assert,
+    app,
+  }) => {
+    const executor = createXrpcExecutor({
+      operations: new Map([
+        [
+          PING_LEXICON.id,
+          {
+            lexicon: PING_LEXICON as any,
+            handler: {
+              kind: 'function' as const,
+              fn: (ctx: any) => ctx.response.redirect('https://cdn.example/blob/abc', 302),
+            },
+            auth: { serviceAuth: false, optional: false },
+          },
+        ],
+      ]),
+      serializer: new XrpcSerializer(),
+    })
+
+    const requestCtx = makeRequestCtx()
+    const atcuteCtx = {
+      request: new Request('http://localhost/xrpc/com.example.ping', { method: 'POST' }),
+      input: {},
+      params: {},
+      signal: new AbortController().signal,
+    }
+
+    const response = (await executor(atcuteCtx, requestCtx)) as Response
+
+    assert.equal(response.status, 302)
+    assert.equal(response.headers.get('location'), 'https://cdn.example/blob/abc')
   })
 
   test('wraps a non-XrpcError as InternalServerError', async ({ assert, app }) => {
@@ -598,7 +771,7 @@ test.group('createXrpcExecutor — HTTP procedure path', (group) => {
       serializer: new XrpcSerializer(),
     })
 
-    const httpCtx = new HttpContextFactory().create()
+    const requestCtx = makeRequestCtx()
     const atcuteCtx = {
       request: new Request('http://localhost/xrpc/com.example.ping', { method: 'POST' }),
       input: {},
@@ -606,13 +779,10 @@ test.group('createXrpcExecutor — HTTP procedure path', (group) => {
       signal: new AbortController().signal,
     }
 
-    await assert.rejects(
-      async () => httpContextStore.run(httpCtx, () => executor(atcuteCtx)),
-      /boom from handler/
-    )
+    await assert.rejects(async () => executor(atcuteCtx, requestCtx), /boom from handler/)
     // And the rejection should be InternalServerError (status 500, errorName InternalServerError)
     try {
-      await httpContextStore.run(httpCtx, () => executor(atcuteCtx))
+      await executor(atcuteCtx, requestCtx)
     } catch (err: any) {
       assert.equal(err.constructor.name, 'InternalServerError')
       assert.equal(err.errorName, 'InternalServerError')
@@ -640,7 +810,7 @@ test.group('createXrpcExecutor — HTTP procedure path', (group) => {
       serializer: new XrpcSerializer(),
     })
 
-    const httpCtx = new HttpContextFactory().create()
+    const requestCtx = makeRequestCtx()
     const atcuteCtx = {
       request: new Request('http://localhost/xrpc/com.example.ping', { method: 'POST' }),
       input: {},
@@ -649,7 +819,7 @@ test.group('createXrpcExecutor — HTTP procedure path', (group) => {
     }
 
     try {
-      await httpContextStore.run(httpCtx, () => executor(atcuteCtx))
+      await executor(atcuteCtx, requestCtx)
       assert.fail('executor should have thrown')
     } catch (err: any) {
       assert.equal(err.constructor.name, 'InvalidRequestError')
@@ -663,7 +833,7 @@ test.group('createXrpcExecutor — HTTP procedure path', (group) => {
       serializer: new XrpcSerializer(),
     })
 
-    const httpCtx = new HttpContextFactory().create()
+    const requestCtx = makeRequestCtx()
     const atcuteCtx = {
       request: new Request('http://localhost/xrpc/com.example.unknown', { method: 'POST' }),
       input: {},
@@ -672,7 +842,7 @@ test.group('createXrpcExecutor — HTTP procedure path', (group) => {
     }
 
     try {
-      await httpContextStore.run(httpCtx, () => executor(atcuteCtx))
+      await executor(atcuteCtx, requestCtx)
       assert.fail('executor should have thrown')
     } catch (err: any) {
       assert.equal(err.constructor.name, 'NotFoundError')
@@ -693,7 +863,7 @@ test.group('createXrpcExecutor — HTTP procedure path', (group) => {
       operations: new Map(),
       serializer: new XrpcSerializer(),
     })
-    const httpCtx = new HttpContextFactory().create()
+    const requestCtx = makeRequestCtx()
     const atcuteCtx = {
       request: new Request('http://localhost/xrpc/__proto__', { method: 'POST' }),
       input: {},
@@ -701,25 +871,58 @@ test.group('createXrpcExecutor — HTTP procedure path', (group) => {
       signal: new AbortController().signal,
     }
     try {
-      await httpContextStore.run(httpCtx, () => executor(atcuteCtx))
+      await executor(atcuteCtx, requestCtx)
       assert.fail('executor should have thrown')
     } catch (err: any) {
       assert.equal(err.constructor.name, 'NotFoundError')
     }
   })
+
+  test('throws InternalServerError when invoked without a RequestContext', async ({
+    assert,
+    app,
+  }) => {
+    // The registered atcute closure passes `requestContextStore.getStore()`
+    // through unconditionally. If a dispatch boundary ever fails to populate
+    // the store, the executor's optional parameter is undefined and the
+    // executor surfaces a precise diagnostic. This test pins that contract.
+    const executor = createXrpcExecutor({
+      operations: new Map([
+        [
+          PING_LEXICON.id,
+          {
+            lexicon: PING_LEXICON as any,
+            handler: { kind: 'function' as const, fn: () => ({ ok: true }) },
+            auth: { serviceAuth: false, optional: false },
+          },
+        ],
+      ]),
+      serializer: new XrpcSerializer(),
+    })
+    const atcuteCtx = {
+      request: new Request('http://localhost/xrpc/com.example.ping', { method: 'POST' }),
+      input: {},
+      params: {},
+      signal: new AbortController().signal,
+    }
+
+    try {
+      await executor(atcuteCtx) // second arg omitted on purpose
+      assert.fail('executor should have thrown')
+    } catch (err: any) {
+      assert.equal(err.constructor.name, 'InternalServerError')
+      assert.match(err.message, /without a RequestContext/i)
+    }
+  })
 })
 ```
 
-`new HttpContextFactory().create()` (from `@adonisjs/core/factories/http`) constructs a synthetic HttpContext with sensible defaults — same factory Plan 01's context tests use. For tests that need request-specific values (URL, method, headers), pass them via `.merge({ request: new RequestFactory().merge({ url: '...' }).create() })` before calling `.create()`.
-
-**Why `httpContextStore.run(...)` and not Adonis's own ALS**: Adonis's `HttpContext` static API is `get() | getOrFail() | usingAsyncLocalStorage | runOutsideContext()` — there's no public `runInContext` / `run` method to _enter_ the HTTP-context ALS for tests (verified against `@adonisjs/http-server@8.x` source: `src/http_context/main.ts` exposes only those four; the underlying `asyncLocalStorage.storage` lives in a non-exported `local_storage.ts` module). Adonis enters its own ALS exclusively from inside `@adonisjs/http-server`'s server module during real request handling. So unit tests populate the package's own `httpContextStore` and the executor's HTTP-context read (`HttpContext.get() ?? httpContextStore.getStore()`) falls through to it — same path the subscription tests already use. The production HTTP path is covered by Task 8's `light-my-request` integration test, which fires real requests through the Adonis pipeline so Adonis populates `HttpContext.get()` naturally.
+**Why pass `requestCtx` directly and skip ALS plumbing**: the executor takes `requestCtx` as an explicit parameter — the dispatch boundary (HTTP middleware or WS upgrade listener) is what enters `requestContextStore`; the registered atcute closure reads from it; the executor itself never touches the ALS. Unit tests skip the boundary entirely and pass a `RequestContext` built via `fromHttpContext(new HttpContextFactory().create())` — same materialization helper the production HTTP path uses, so unit tests catch any drift in the helper's shape. This also avoids the previous need to populate Adonis's private HttpContext ALS for tests (verified against `@adonisjs/http-server@8.x` source — there's no public method to enter that ALS from outside). The production HTTP path is additionally covered by Task 8's `light-my-request` integration test, which fires real requests through the Adonis pipeline so the dispatch middleware materializes a `RequestContext` from a real (not factory-built) `HttpContext`.
 
 - [ ] **Step 3: Run tests to verify they pass**
 
 Run: `pnpm quick:test --files tests/xrpc_server.spec.ts`
-Expected: PASS — 4 new tests (HTTP path) plus the 1 module-shape test from Task 2.
-
-The HTTP-path tests use `httpContextStore.run(httpCtx, ...)` (the package's own ALS) rather than reaching for Adonis's private HttpContext ALS — see the Step 2 explanation above for why. The executor's fallback path (`HttpContext.get() ?? httpContextStore.getStore()`) reads either store, so tests populate the package store and production reads from Adonis's store; same dispatch logic exercises both.
+Expected: PASS — 7 new tests (HTTP path: pong + status/header/json overrides + redirect + non-XrpcError wrap + XrpcError pass-through + NotFound + crafted `/xrpc/__proto__` + missing-RequestContext guard — verify the actual count after writing the tests) plus the 2 module-shape tests from Task 2.
 
 - [ ] **Step 4: Commit**
 
@@ -770,9 +973,10 @@ import { XRPCSubscriptionError } from '@atcute/xrpc-server'
 async function* wrapSubscriptionIterator(
   iterable: AsyncIterable<unknown>,
   xrpcCtx: XrpcContext<XrpcLexicon>,
-  httpCtx: HttpContext,
   serializer: XrpcSerializer
 ): AsyncGenerator<unknown> {
+  // Only needs xrpcCtx — containerResolver (for serialization) and the full
+  // context (for the error reporter) both live on XrpcContext.
   const inner = iterable[Symbol.asyncIterator]()
   try {
     while (true) {
@@ -782,9 +986,10 @@ async function* wrapSubscriptionIterator(
       // empirically — see Task 4 intro for the spike.
       const result = await XrpcContext.als.run(xrpcCtx, () => inner.next())
       if (result.done) return
-      // Serialization doesn't need to read XrpcContext, so it stays outside
-      // the scope — keeps the scope window tight to just handler execution.
-      yield await serializer.serializeWithoutWrapping(result.value, httpCtx.containerResolver)
+      // Serialization doesn't need to read XrpcContext via the ALS, so it
+      // stays outside the scope — keeps the scope window tight to just
+      // handler execution.
+      yield await serializer.serializeWithoutWrapping(result.value, xrpcCtx.containerResolver)
     }
   } catch (err: any) {
     const xrpcError =
@@ -792,7 +997,7 @@ async function* wrapSubscriptionIterator(
         ? err
         : new InternalServerError(err?.message ?? String(err), { cause: err })
     // ERROR-REPORTING SEAM (Plan 04): call
-    //   `await xrpc.getRegisteredSubscriptionErrorHandler()?.report(err, httpCtx)`
+    //   `await xrpc.getRegisteredSubscriptionErrorHandler()?.report(err, xrpcCtx)`
     // here. Falls through to `getRegisteredErrorHandler()` when the
     // subscription-specific handler isn't registered.
     throw new XRPCSubscriptionError({
@@ -850,16 +1055,14 @@ test.group('createXrpcExecutor — subscription path', (group) => {
       serializer: new XrpcSerializer(),
     })
 
-    const httpCtx = new HttpContextFactory().create()
-    httpContextStore.enterWith(httpCtx) // populate the subscription ALS
-
+    const requestCtx = makeRequestCtx()
     const atcuteCtx = {
       request: new Request('http://localhost/xrpc/com.example.stream'),
       params: {},
       signal: new AbortController().signal,
     }
 
-    const iterable = (await executor(atcuteCtx)) as AsyncIterable<any>
+    const iterable = (await executor(atcuteCtx, requestCtx)) as AsyncIterable<any>
     const collected: any[] = []
     for await (const msg of iterable) {
       collected.push(msg)
@@ -903,15 +1106,14 @@ test.group('createXrpcExecutor — subscription path', (group) => {
       serializer: new XrpcSerializer(),
     })
 
-    const httpCtx = new HttpContextFactory().create()
-    httpContextStore.enterWith(httpCtx)
+    const requestCtx = makeRequestCtx()
     const atcuteCtx = {
       request: new Request('http://localhost/xrpc/com.example.stream'),
       params: {},
       signal: new AbortController().signal,
     }
 
-    const iterable = (await executor(atcuteCtx)) as AsyncIterable<any>
+    const iterable = (await executor(atcuteCtx, requestCtx)) as AsyncIterable<any>
     for await (const _ of iterable) {
       /* drain */
     }
@@ -950,8 +1152,7 @@ test.group('createXrpcExecutor — subscription path', (group) => {
       serializer: new XrpcSerializer(),
     })
 
-    const httpCtx = new HttpContextFactory().create()
-    httpContextStore.enterWith(httpCtx)
+    const requestCtx = makeRequestCtx()
 
     const atcuteCtx = {
       request: new Request('http://localhost/xrpc/com.example.stream'),
@@ -959,7 +1160,7 @@ test.group('createXrpcExecutor — subscription path', (group) => {
       signal: new AbortController().signal,
     }
 
-    const iterable = (await executor(atcuteCtx)) as AsyncIterable<any>
+    const iterable = (await executor(atcuteCtx, requestCtx)) as AsyncIterable<any>
     const collected: any[] = []
     try {
       for await (const msg of iterable) {
@@ -1008,16 +1209,10 @@ In `src/xrpc_server.ts`, replace the `XrpcServer.start()` body and add the priva
 
 ```ts
 async start(): Promise<void> {
-  // The executor reads the request-scoped HttpContext via HttpContext.get()
-  // on the HTTP path. Without useAsyncLocalStorage: true in config/app.ts
-  // that returns null on every request and dispatch silently breaks. The
-  // configure command (Plan 01) sets the flag during install; this guard
-  // catches the case where someone disabled it afterwards.
-  if (!HttpContext.usingAsyncLocalStorage) {
-    throw new RuntimeException(
-      'XRPC dispatch requires useAsyncLocalStorage: true in config/app.ts (http section)'
-    )
-  }
+  // No `useAsyncLocalStorage: true` check — the package brings its own
+  // `requestContextStore` ALS, entered by the HTTP dispatch middleware and the
+  // WS upgrade listener at the dispatch boundary. We don't depend on
+  // Adonis's HttpContext ALS for any read inside the executor.
 
   // Routes install unconditionally — registering routes on atcute's
   // XRPCRouter has no dependency on a Node HTTP server (the HTTP-side
@@ -1035,18 +1230,28 @@ async start(): Promise<void> {
       'XRPC builder must be committed before installing routes; call router.xrpc.commit() first'
     )
   }
+
+  // One closure handler for all routes. atcute has no per-request extension
+  // point; both paths bridge through `requestContextStore` (HTTP via the
+  // dispatch middleware, WS via the upgrade listener), so the registered
+  // handler just reads from it and passes the result through. The executor's
+  // signature accepts `requestCtx?: RequestContext`; if `getStore()` returns
+  // undefined here (i.e. a dispatch boundary skipped its `enterWith` /
+  // `run`), the executor throws InternalServerError with a clear diagnostic
+  // — no non-null assertion needed at this call site.
+  const handler = (atcuteCtx: any) =>
+    this.#executor(atcuteCtx, requestContextStore.getStore())
+
   for (const route of xrpc.operations.values()) {
     switch (route.lexicon.type) {
       case 'xrpc_procedure':
-        this.#router.addProcedure(route.lexicon as any, { handler: this.#executor as any })
+        this.#router.addProcedure(route.lexicon as any, { handler })
         break
       case 'xrpc_query':
-        this.#router.addQuery(route.lexicon as any, { handler: this.#executor as any })
+        this.#router.addQuery(route.lexicon as any, { handler })
         break
       case 'xrpc_subscription':
-        this.#router.addSubscription(route.lexicon as any, {
-          handler: this.#executor as any,
-        })
+        this.#router.addSubscription(route.lexicon as any, { handler })
         break
       default: {
         // Exhaustiveness — if the lexicon shape adds a new method type
@@ -1206,7 +1411,7 @@ The WebSocket upgrade handler is the trickiest piece of the dispatch layer. The 
 **The fix: snip-and-wrap.** We call `injectWebSocket` to let atcute register its listener, then immediately remove it from `nodeServer.listeners('upgrade')` and re-register a wrapping listener of our own that:
 
 1. Returns early if the URL doesn't start with `/xrpc/` — letting Vite HMR and any other consumer-registered upgrade listener handle the event untouched.
-2. For `/xrpc/*` URLs, builds the synthetic HttpContext, `enterWith()`s it on the package's `httpContextStore`, then calls atcute's captured listener.
+2. For `/xrpc/*` URLs, builds a `RequestContext` directly from the upgrade `IncomingMessage` and `app`: construct an Adonis `HttpRequest` via `appServer.createRequest(req, synthRes)` (uses live app config, so `.id()` honors `generateRequestId` / `createRequestId` for parity with the HTTP path's generator) and keep the HttpRequest in the RequestContext so subscription handlers can use `ctx.request.header()` / `ctx.request.input()` / `.completeUrl()` etc.; logger via `app.logger.child({ request_id })`; resolver via `app.container.createResolver()`. `enterWith()` the result on `requestContextStore`, then call atcute's captured listener. No synthetic `HttpContext` is constructed.
 
 This collapses to a single registered listener on the Node server (ours, wrapping atcute's). No ordering invariant to maintain; no race between our listener and atcute's; non-XRPC upgrades pass through cleanly.
 
@@ -1267,29 +1472,35 @@ In `src/xrpc_server.ts`, add after `#installRoutes`:
     }
 
     // AUTH SEAM (Plan 05): pre-flight service-JWT verification fires here,
-    // between HttpContext establishment and delegating to atcute. The
+    // between RequestContext construction and delegating to atcute. The
     // `Authorization` header is on `req.headers`; the route's auth
     // declaration is on `route.auth` (looked up via the NSID slice). Reject
     // the upgrade by destroying the socket if verification fails.
 
+    // Build a narrow RequestContext directly — no synthetic HttpContext.
+    // appServer.createRequest uses the live app config (encryption, qsParser,
+    // HTTP config) so HttpRequest.id() respects the consumer's
+    // `generateRequestId` / `createRequestId` settings — request IDs stay
+    // consistent with the HTTP-path generator within the same app. The
+    // HttpRequest itself flows into the RequestContext so subscription
+    // handlers can use `ctx.request.header(...)`, `ctx.request.input(...)`
+    // (query params), `ctx.request.completeUrl()`, etc. — same surface as
+    // procedure/query handlers. Body methods are inapplicable (subscriptions
+    // have no body) but consistent with the lexicon contract.
     const synthRes = new ServerResponse(req)
-    const httpRequest = appServer.createRequest(req, synthRes)
-    const httpResponse = appServer.createResponse(req, synthRes)
-    const resolver = this.#app.container.createResolver()
-    const httpCtx = appServer.createHttpContext(httpRequest, httpResponse, resolver)
-
-    // Mirror what `container_bindings_middleware` does for HTTP-triggered
-    // routes — bind the freshly-constructed HttpContext + Logger so anything
-    // resolved via the container during dispatch sees them.
-    resolver.bindValue(HttpContext, httpCtx)
-    resolver.bindValue(Logger, httpCtx.logger)
+    const request = appServer.createRequest(req, synthRes)
+    // Same fallback as `fromHttpContext` — keeps `RequestContext.requestId`
+    // always a string regardless of consumer's `generateRequestId` setting.
+    const requestId = request.id() ?? crypto.randomUUID()
+    const logger = this.#app.logger.child({ request_id: requestId })
+    const containerResolver = this.#app.container.createResolver()
 
     // `enterWith` (not `run`) so the store survives the synchronous chain
     // when we delegate to atcute's captured listener (which awaits async
     // work in router.fetch — those continuations inherit our store via
     // async-hooks init snapshotting). See the Task 6 intro for the
     // concurrent-upgrade safety analysis.
-    httpContextStore.enterWith(httpCtx)
+    requestContextStore.enterWith({ requestId, request, logger, containerResolver })
 
     await atcuteListener(req, socket, head)
   })
@@ -1300,11 +1511,6 @@ And update `start()` to call it:
 
 ```ts
 async start(): Promise<void> {
-  if (!HttpContext.usingAsyncLocalStorage) {
-    throw new RuntimeException(
-      'XRPC dispatch requires useAsyncLocalStorage: true in config/app.ts (http section)'
-    )
-  }
 
   // Routes always install — no dependency on a Node HTTP server.
   const router = await this.#app.container.make('router')
@@ -1357,6 +1563,7 @@ import type { HttpContext } from '@adonisjs/core/http'
 import type { NextFn } from '@adonisjs/core/types/http'
 
 import { XrpcServer } from '../xrpc_server.js'
+import { requestContextStore, fromHttpContext } from '../request_context.js'
 import { adonisRequestToWebRequest, writeWebResponseToAdonisResponse } from '../utils.js'
 
 /**
@@ -1369,6 +1576,12 @@ import { adonisRequestToWebRequest, writeWebResponseToAdonisResponse } from '../
  * request). Resolving per-request lets future plans inject a per-test or
  * per-tenant XrpcServer via container scoping; in production it's always
  * the same singleton.
+ *
+ * The middleware is also the HTTP-path entry into `requestContextStore`: it
+ * materializes a `RequestContext` from the triggering `HttpContext`
+ * (via `fromHttpContext(ctx)`) and runs `xrpcRouter.fetch(...)` inside
+ * `requestContextStore.run(...)`. The registered atcute closure then reads
+ * `requestContextStore.getStore()` and threads it into the executor.
  */
 export default class XrpcDispatchMiddleware {
   async handle(ctx: HttpContext, next: NextFn) {
@@ -1396,7 +1609,9 @@ export default class XrpcDispatchMiddleware {
     // construction) encodes it as the wire response.
 
     const webRequest = adonisRequestToWebRequest(ctx.request)
-    const webResponse = await xrpcServer.router.fetch(webRequest)
+    const webResponse = await requestContextStore.run(fromHttpContext(ctx), () =>
+      xrpcServer.router.fetch(webRequest)
+    )
     return writeWebResponseToAdonisResponse(webResponse, ctx.response)
   }
 }
@@ -1753,7 +1968,7 @@ git commit -m "feat(xrpc): add minimal provider (router.xrpc + XrpcServer ready 
 
 Real Adonis pipeline, real atcute dispatch. Bootstraps an app via `setupApp({ environment: 'web', rcFileContents.providers: [...] })` so Task 7b's minimal provider does the wiring (constructs the atcute `XRPCRouter` + `XrpcServer`, container-binds, commits the `XrpcRouter`, calls `start()`). Tests register XRPC routes in `beforeReady` via the provider-installed `router.xrpc` getter; setupApp's `app.start(cb)` block (extended in Task 7b Step 4) mounts the dispatch middleware in `server.use([...])`; and requests fire through `light-my-request`'s `inject(server.handle.bind(server))` — no port binding needed (same pattern Emelia uses in `fedimod/fires`'s `tests/plugins/request_tests.ts`). The HTTP path goes through the full Adonis pipeline; only the network socket is synthetic.
 
-**Test-layering rationale**: this is the test that exercises the **`HttpContext.get()`** branch of the executor's `HttpContext.get() ?? httpContextStore.getStore()` fallback. Adonis's server pipeline enters its private HttpContext ALS as part of normal request handling — when atcute's `router.fetch(webRequest)` reaches our executor, the executor's `HttpContext.get()` call returns the live Adonis context. The Task 3 unit tests exercise the other arm (package `httpContextStore`); together both arms are covered.
+**Test-layering rationale**: this is the test that exercises the **real `fromHttpContext`** path end-to-end. The dispatch middleware receives the live Adonis `HttpContext` as a parameter and calls `requestContextStore.run(fromHttpContext(ctx), () => xrpcRouter.fetch(...))`; the registered atcute closure then reads from `requestContextStore.getStore()` and threads it into the executor. The Task 3 unit tests exercise the executor with a factory-built `RequestContext` (via `fromHttpContext(new HttpContextFactory().create())`); this test exercises the same materialization helper against a real `HttpContext` produced by the Adonis pipeline.
 
 **Why the test body calls `server.boot()`**: in the test body, `const server = await app.container.make('server')` resolves Adonis's HTTP `Server` (from `@adonisjs/http-server`) — distinct from the `XrpcServer` constructed in `beforeReady`. `server.boot()` is what actually invokes the router-stuff: it walks the routes registry and mounts the middleware chain, including our dispatch middleware. Without it, `inject(server.handle.bind(server))` would hit a handler that hasn't run its boot phase and would 404 or worse. `boot()` is idempotent — safe to call defensively even if `setupApp`'s lifecycle already ran some of it. (Adonis testUtils' `HttpServerUtils.start()` does this same `boot()` step then proceeds to bind a real port; we stop at `boot()` and inject directly.)
 
@@ -2142,6 +2357,25 @@ export interface InjectedXrpcSubscription {
    * `for await ... break` until they've observed enough — subscriptions
    * don't have a natural end, so the test decides when. Each frame is a
    * `DecodedFrame` discriminated union (`{ type: 'message' } | { type: 'error' }`).
+   *
+   * **FOLLOW-UP (revisit during implementation)**: this signature is a
+   * first-pass guess. Once the helper is built and the Task 10 functional
+   * test exercises it end-to-end, evaluate whether the shape feels right
+   * to use — concrete questions to answer:
+   *   - Should the return type be `AsyncGenerator<DecodedFrame>` instead
+   *     of `AsyncIterable<DecodedFrame>` (so consumers get `.return()` /
+   *     `.throw()` typed)?
+   *   - Should it be a method returning a fresh iterable each call, or a
+   *     getter / property holding a single shared iterable? (Method
+   *     returning fresh allows multiple concurrent iterators but might
+   *     surprise consumers who expect "the messages stream").
+   *   - How does `close()` interact with in-flight iteration — does it
+   *     cause the iterator to cleanly `done: true`, or throw?
+   *   - Does `injectXrpcSubscription` need any kind of "wait for first
+   *     frame" affordance, or is `messages().next()` sufficient?
+   * If the shape changes, propagate the rename / signature update through
+   * Task 10's functional test and any consumer-facing docs. Not blocking
+   * Plan 03 — just don't lock it in unconsciously.
    */
   messages(): AsyncIterable<DecodedFrame>
   /** Close the WebSocket from the client side. Resolves when fully closed. */
@@ -2266,8 +2500,8 @@ test.group('injectXrpcSubscription', () => {
     server.on('upgrade', (req, socket, head) => {
       wss.handleUpgrade(req, socket, head, (ws) => {
         const header = encode({ op: 1, t: '#tick' })
-        const body = encode({ n: 7 })
-        ws.send(Buffer.concat([header, body]))
+        ws.send(Buffer.concat([header, encode({ n: 7 })]))
+        ws.send(Buffer.concat([header, encode({ n: 8 })]))
         ws.close()
       })
     })
@@ -2278,10 +2512,15 @@ test.group('injectXrpcSubscription', () => {
       collected.push(frame)
     }
 
-    assert.lengthOf(collected, 1)
+    assert.lengthOf(collected, 2)
+    // First message:
     assert.equal(collected[0].type, 'message')
     assert.equal(collected[0].discriminator, '#tick')
     assert.deepEqual(collected[0].body, { n: 7 })
+    // Second message:
+    assert.equal(collected[0].type, 'message')
+    assert.equal(collected[0].discriminator, '#tick')
+    assert.deepEqual(collected[0].body, { n: 8 })
   })
 })
 ```
@@ -2546,7 +2785,7 @@ Run through this checklist before handing off:
   - `XrpcServer` class with `start()` + `#installRoutes` + `#installWebSocketHandler` — Tasks 5, 6 ✓
   - `createXrpcExecutor` (HTTP path with handler resolution + serialization + error wrapping) — Task 3 ✓
   - `wrapSubscriptionIterator` (subscription branch + XrpcError → XRPCSubscriptionError translation) — Task 4 ✓
-  - `httpContextStore` ALS for subscription path — Task 2 ✓
+  - `requestContextStore` ALS (typed `AsyncLocalStorage<RequestContext>`) + `fromHttpContext` helper — Task 2 ✓
   - Synthetic HttpContext construction at the 'upgrade' event — Task 6 ✓
   - Snip-and-wrap of atcute's upgrade listener (replaces the original "ours first, atcute's second" design — see Task 6 intro) — Task 6 ✓
   - `XrpcDispatchMiddleware` (HTTP path intercept + atcute handoff) — Task 7 ✓
@@ -2560,10 +2799,10 @@ Run through this checklist before handing off:
   - `XrpcAuth` + auth pre-trigger — out of scope, Plan 05 ✓
   - `HttpContext.xrpc` Macroable getter — out of scope, Plan 04 ✓
 
-- [ ] **Type consistency:** `SharedXrpcExecutor` return type covers both `Promise<unknown>` (HTTP path — returns the serialized body; atcute's `XRPCRouter` wraps into a `Response` downstream) and `AsyncIterable<unknown>` (subscription path). `RouteInfo` from Plan 01 carries the `auth: RouteAuthDecl` field (Plan 05 reads it) and is consumed by the executor without being modified here. `XrpcContext` construction passes the same set of fields as the factory's `merge()` accepts in Plan 01 — `httpCtx`, `lexicon`, `request`, `input`, `params`, `signal` — with no `auth` (deferred to Plan 05's Macroable getter).
+- [ ] **Type consistency:** `SharedXrpcExecutor` signature is `(atcuteCtx, requestCtx?: RequestContext) => Promise<Response> | AsyncIterable<unknown>` — return covers both `Promise<Response>` (HTTP path — the executor constructs a `Response` from `xrpcCtx.response.state` + the serialized body; atcute's router checks `output instanceof Response` and silently drops non-Response returns) and `AsyncIterable<unknown>` (subscription path — atcute iterates for frame encoding). `RouteInfo` from Plan 01 carries the `auth: RouteAuthDecl` field (Plan 05 reads it) and is consumed by the executor without being modified here. `XrpcContext` construction sources `requestId` / `request: HttpRequest` (Adonis) / `logger` / `containerResolver` from `requestCtx`, and `lexicon` / `input` / `params` / `signal` from `route` + `atcuteCtx` — with no `auth` (deferred to Plan 05's Macroable getter). After `xrpcCtx` is constructed, every subsequent read in the executor (and in `wrapSubscriptionIterator`) sources from `xrpcCtx`, not `requestCtx`.
 
 - [ ] **Forward-compat seams for later plans:** Three explicit seams are documented in the code with comment-anchors:
-  - `AUTH SEAM (Plan 05)` in `createXrpcExecutor` (between context construction and handler invocation), in `XrpcDispatchMiddleware.handle` (between server resolution and atcute handoff), and in `XrpcServer.#installWebSocketHandler` (between path match and HttpContext construction).
+  - `AUTH SEAM (Plan 05)` in `createXrpcExecutor` (between context construction and handler invocation), in `XrpcDispatchMiddleware.handle` (between server resolution and atcute handoff), and in `XrpcServer.#installWebSocketHandler` (between path match and RequestContext construction).
   - `ERROR-REPORTING SEAM (Plan 04)` in `createXrpcExecutor`'s catch block and in `wrapSubscriptionIterator`'s catch block.
   - Comment in `createXrpcExecutor`'s `deps` shape lists the future Plan 04 / Plan 05 fields explicitly so reviewers can see what's coming.
 

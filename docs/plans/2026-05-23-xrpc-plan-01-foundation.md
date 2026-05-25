@@ -1360,7 +1360,9 @@ git commit -m "feat(xrpc): add Web ↔ Adonis request/response conversion utilit
 - Create: `src/context.ts`
 - Create: `tests/context.spec.ts`
 
-Delivers `XrpcContext`, `XrpcResponse`, `XrpcStream` (all Macroable). `XrpcContext.getOrFail()` reads from a package-owned `AsyncLocalStorage`. **No `.auth` field** — Plan 05 attaches it via declaration merging + macro.
+Delivers `XrpcContext`, `XrpcResponse`, `XrpcStream` (all Macroable). `XrpcContext.getOrFail()` reads from a package-owned `AsyncLocalStorage`. **No `.auth` field** — a future auth-spec attaches it via declaration merging + macro.
+
+The constructor takes materialized per-request primitives (`logger`, `containerResolver`, `requestId`, `request: HttpRequest`) rather than a full `HttpContext` — the package doesn't keep an Adonis `HttpContext` reference around because the WS-subscription path has no such object to expose anyway (see the design spec's "HTTP-context asymmetry" section). The dispatch boundary (Plan 03's middleware + WS upgrade listener) materializes these via `fromHttpContext(httpCtx)` or directly from the upgrade `IncomingMessage`, then threads them as a `RequestContext` into the executor, which forwards them to the `XrpcContext` constructor.
 
 **Steps:**
 
@@ -1372,7 +1374,7 @@ Create `src/context.ts`:
 import { AsyncLocalStorage } from 'node:async_hooks'
 import Macroable from '@poppinss/macroable'
 import { RuntimeException } from '@adonisjs/core/exceptions'
-import type { HttpContext, HttpResponse, Logger } from '@adonisjs/core/http'
+import type { HttpRequest, Logger } from '@adonisjs/core/http'
 import type { ContainerResolver } from '@adonisjs/core/container'
 import type {
   InferInput,
@@ -1385,76 +1387,61 @@ import type {
   XrpcSubscriptionLexicon,
 } from './types.js'
 
-const NO_BODY = Symbol('XrpcResponse.NO_BODY')
-
 /**
- * Output channel for procedure / query handlers. A thin typed wrapper over
- * the underlying Adonis `HttpResponse` — `status`, `header`, and `redirect`
- * delegate so there's a single source of truth for response state. Macroable
- * so plugin packages can attach declarative response methods.
+ * Output channel for procedure / query handlers. Buffers response state
+ * locally (status / headers / body / redirect) — the dispatch executor
+ * (Plan 03) reads `.state` after the handler resolves and constructs the
+ * wire `Response` (atcute's router checks `output instanceof Response` and
+ * silently drops non-Response returns, so the executor MUST construct one).
  *
- * The body is the one slot we buffer locally rather than delegating: the
- * lexicon-typed return value needs to flow through `XrpcSerializer` and
- * atcute's framing layer before reaching the wire, so committing it to
- * `httpResponse.send(...)` from the handler would be premature.
+ * Macroable so plugin packages can attach declarative response methods.
  *
  * For subscriptions, this class is not used — `XrpcStream` lives in the same
- * `ctx.response` slot but doesn't touch the synthetic HttpResponse (which is
- * degenerate post-WebSocket-upgrade).
+ * `ctx.response` slot for that path.
  *
- * @internal — instances constructed by dispatch or XrpcContextFactory.
+ * @internal — instances constructed by `XrpcContext`'s constructor (which
+ * branches on `lexicon.type`).
  */
 export class XrpcResponse<L extends XrpcLexicon> extends Macroable {
-  #body: InferOutput<L> | typeof NO_BODY = NO_BODY
+  /**
+   * Accumulated state from chainable setter calls. Read by the dispatch
+   * executor after the handler resolves. `bodySet` is the discriminator
+   * (rather than `body !== undefined`) because a handler can legitimately
+   * call `.json(null)` for null-output lexicons — "explicitly set to null"
+   * must differ from "never called".
+   */
+  readonly state: {
+    status?: number
+    headers: Headers
+    body?: InferOutput<L>
+    bodySet: boolean
+    redirect?: { url: string; status: 301 | 302 | 303 | 307 | 308 }
+  }
 
-  constructor(private httpResponse: HttpResponse) {
+  constructor() {
     super()
+    this.state = { headers: new Headers(), bodySet: false }
   }
 
   status(code: number): this {
-    this.httpResponse.status(code)
+    this.state.status = code
     return this
   }
 
   header(name: string, value: string): this {
-    this.httpResponse.header(name, value)
+    this.state.headers.set(name, value)
     return this
   }
 
-  body(value: InferOutput<L>): this {
-    this.#body = value
+  json(value: InferOutput<L>): this {
+    this.state.body = value
+    this.state.bodySet = true
     return this
   }
 
   redirect(url: string, status: 301 | 302 | 303 | 307 | 308 = 302): this {
-    // Use Adonis's Redirect builder so any future redirect-specific concerns
-    // (Accept-Language, signed URLs, etc.) get handled canonically by the
-    // framework rather than reimplemented here.
-    this.httpResponse.redirect().status(status).toPath(url)
+    this.state.redirect = { url, status }
     return this
-  }
-
-  /**
-   * Snapshot of the response state for atcute Response construction. Status
-   * and headers come from the underlying HttpResponse (where the handler
-   * delegated them); body is the explicit `.body(value)` if it was called,
-   * otherwise `undefined` (the executor then falls back to the handler's
-   * return value).
-   *
-   * @internal — called by the dispatch executor (Plan 03).
-   */
-  get state(): {
-    status: number
-    headers: ReturnType<HttpResponse['getHeaders']>
-    body: InferOutput<L> | undefined
-    hasExplicitBody: boolean
-  } {
-    return {
-      status: this.httpResponse.getStatus(),
-      headers: this.httpResponse.getHeaders(),
-      body: this.#body === NO_BODY ? undefined : this.#body,
-      hasExplicitBody: this.#body !== NO_BODY,
-    }
   }
 }
 
@@ -1467,7 +1454,7 @@ export class XrpcResponse<L extends XrpcLexicon> extends Macroable {
  */
 export class XrpcStream<L extends XrpcSubscriptionLexicon> extends Macroable {
   constructor(
-    private lexiconId: string,
+    private lexicon: L,
     public readonly signal: AbortSignal
   ) {
     super()
@@ -1489,33 +1476,46 @@ export class XrpcStream<L extends XrpcSubscriptionLexicon> extends Macroable {
    */
   message<R extends XrpcMessageRef<L>>(ref: R, payload: XrpcMessagePayload<L, R>): XrpcMessage<L> {
     return {
-      $type: `${this.lexiconId}${ref}`,
+      $type: `${this.lexicon.id}${ref}`,
       ...payload,
     } as unknown as XrpcMessage<L>
   }
 }
 
 /**
- * Constructor params for XrpcContext. Kept as a single object for forward-
- * compat — adding new fields stays non-breaking.
+ * Constructor params for XrpcContext. Materialized at the dispatch boundary
+ * — see Plan 03's `fromHttpContext()` (HTTP path) and `#installWebSocketHandler`
+ * (WS path) for the two sources. Kept as a single object for forward-compat
+ * — adding new fields stays non-breaking.
  */
 export interface XrpcContextParams<L extends XrpcLexicon> {
-  httpCtx: HttpContext
   lexicon: L
-  request: Request
+  request: HttpRequest // Adonis HttpRequest — .validateUsing, .header, .input, etc.
   input: L extends XrpcSubscriptionLexicon ? undefined : InferInput<L>
   params: InferParams<L>
   signal: AbortSignal
+  logger: Logger
+  containerResolver: ContainerResolver
+  requestId: string
 }
 
 /**
- * Per-request XRPC context. Constructed by the dispatch executor for both
- * HTTP-triggered (procedure / query) and subscription paths. The static
- * `als` slot and `getOrFail()` accessor let downstream code reach the
+ * Per-request XRPC context. Constructed by the dispatch executor (Plan 03)
+ * for both HTTP-triggered (procedure / query) and subscription paths. The
+ * static `als` slot and `getOrFail()` accessor let downstream code reach the
  * current context without explicit threading.
  *
- * Plan 05 augments this class with `auth: XrpcAuth` via declaration
- * merging and a getter macro — that's why XrpcContext is Macroable.
+ * A future auth-spec augments this class with `auth: XrpcAuth` via
+ * declaration merging and a getter macro — that's why XrpcContext is
+ * Macroable. (Plan 04's `HttpContext.xrpc` macro uses the same mechanism in
+ * the opposite direction.)
+ *
+ * Notably absent: no `httpContext` getter / no underlying HttpContext field.
+ * The WS-subscription path has no Adonis HttpContext to expose, so the design
+ * spec mandates exposing the request-scoped primitives directly (`logger`,
+ * `containerResolver`, `requestId`, `request: HttpRequest`) rather than
+ * routing them through a sometimes-synthetic HttpContext. See the spec's
+ * "HTTP-context asymmetry" section for the rationale.
  */
 export class XrpcContext<L extends XrpcLexicon> extends Macroable {
   static readonly als = new AsyncLocalStorage<XrpcContext<XrpcLexicon>>()
@@ -1523,8 +1523,8 @@ export class XrpcContext<L extends XrpcLexicon> extends Macroable {
   /**
    * Returns the active XrpcContext from the package's own ALS. Use this
    * inside XRPC handlers and any downstream code instead of
-   * `HttpContext.getOrFail()` — see the spec's "HTTP-context constraint
-   * for subscriptions" section for the rationale.
+   * `HttpContext.getOrFail()` — see the spec's "HTTP-context asymmetry"
+   * section for the rationale.
    */
   static getOrFail(): XrpcContext<XrpcLexicon> {
     const ctx = XrpcContext.als.getStore()
@@ -1536,49 +1536,37 @@ export class XrpcContext<L extends XrpcLexicon> extends Macroable {
     return ctx
   }
 
-  readonly request: Request
+  readonly request: HttpRequest
   readonly lexicon: L
   readonly input: L extends XrpcSubscriptionLexicon ? undefined : InferInput<L>
   readonly params: InferParams<L>
   readonly signal: AbortSignal
   readonly response: L extends XrpcSubscriptionLexicon ? XrpcStream<L> : XrpcResponse<L>
 
-  // Inherited / mirrored from the triggering HttpContext:
+  // Mirrored from the dispatch-boundary `RequestContext`:
   readonly logger: Logger
   readonly containerResolver: ContainerResolver
   readonly requestId: string
 
-  #httpCtx: HttpContext
-
   /** @internal — instances constructed by dispatch or XrpcContextFactory. */
   constructor(params: XrpcContextParams<L>) {
     super()
-    this.#httpCtx = params.httpCtx
-    this.request = params.request
     this.lexicon = params.lexicon
+    this.request = params.request
     this.input = params.input
     this.params = params.params
     this.signal = params.signal
+    this.logger = params.logger
+    this.containerResolver = params.containerResolver
+    this.requestId = params.requestId
 
-    this.logger = params.httpCtx.logger
-    this.containerResolver = params.httpCtx.containerResolver
-    this.requestId = params.httpCtx.request.id() ?? crypto.randomUUID()
-
+    // Single place that knows the lexicon-kind → response-kind mapping.
+    // The executor doesn't need to construct these itself.
     this.response = (
       params.lexicon.type === 'xrpc_subscription'
-        ? new XrpcStream(params.lexicon.id, params.signal)
-        : new XrpcResponse<L>(params.httpCtx.response)
+        ? new XrpcStream(params.lexicon as L & XrpcSubscriptionLexicon, params.signal)
+        : new XrpcResponse<L>()
     ) as XrpcContext<L>['response']
-  }
-
-  /**
-   * Direct access to the underlying HttpContext. For subscriptions, this
-   * is the synthetic HttpContext built at the WebSocket 'upgrade' event —
-   * middleware-populated properties (session, cookies) will not be present.
-   * Prefer the mirrored properties when possible.
-   */
-  get httpContext(): HttpContext {
-    return this.#httpCtx
   }
 }
 ```
@@ -1591,38 +1579,38 @@ Create `tests/context.spec.ts`:
 import { test } from '@japa/runner'
 import { HttpContextFactory } from '@adonisjs/core/factories/http'
 import { XrpcContext, XrpcResponse, XrpcStream } from '../src/context.js'
-import { adonisRequestToWebRequest } from '../src/utils.js'
 
 const procedureLex = { id: 'com.example.test.proc', type: 'xrpc_procedure' } as any
 const subscriptionLex = { id: 'com.example.test.sub', type: 'xrpc_subscription' } as any
 
 function makeContext(overrides: Partial<ConstructorParameters<typeof XrpcContext>[0]> = {}) {
+  // HttpContextFactory gives us a real-shaped HttpRequest / Logger / resolver
+  // without standing up an Adonis pipeline — same dependency the production
+  // HTTP-path materialization uses via `fromHttpContext()`. Tests that need
+  // to override individual primitives can do so via `merge()`.
   const httpCtx = new HttpContextFactory().create()
   const lexicon = (overrides.lexicon as any) ?? procedureLex
   return new XrpcContext({
-    httpCtx,
     lexicon,
-    // Single source of truth for "the incoming request" — derive the Fetch
-    // Request from the same Adonis HttpRequest the factory already populated.
-    request: adonisRequestToWebRequest(httpCtx.request, 'http://localhost'),
+    request: httpCtx.request,
     input: undefined,
     params: {},
     signal: new AbortController().signal,
+    logger: httpCtx.logger,
+    containerResolver: httpCtx.containerResolver,
+    requestId: httpCtx.request.id() ?? 'test-req-id',
     ...overrides,
   })
 }
 
 test.group('XrpcContext — construction', () => {
-  test('mirrors logger / containerResolver / requestId from httpCtx', ({ assert }) => {
+  test('exposes the materialized primitives directly', ({ assert }) => {
     const ctx = makeContext()
-    assert.equal(ctx.logger, ctx.httpContext.logger)
-    assert.equal(ctx.containerResolver, ctx.httpContext.containerResolver)
+    assert.isObject(ctx.logger)
+    assert.isObject(ctx.containerResolver)
     assert.isString(ctx.requestId)
-    // XrpcContext.requestId is sourced from httpCtx.request.id(). That method
-    // memoizes its result (Adonis caches the generated id into the request
-    // headers on first call), so the two are guaranteed to agree after
-    // construction.
-    assert.equal(ctx.requestId, ctx.httpContext.request.id())
+    assert.isObject(ctx.request)
+    assert.isFunction((ctx.request as any).header) // HttpRequest API surface
   })
 
   test('procedure-kind context exposes response as XrpcResponse', ({ assert }) => {
@@ -1665,39 +1653,46 @@ test.group('XrpcContext.getOrFail — ALS', () => {
 })
 
 test.group('XrpcResponse — chainable setters', () => {
-  test('status / header delegate to httpCtx.response', ({ assert }) => {
+  test('status / header mutate internal state and return `this`', ({ assert }) => {
     const ctx = makeContext()
     const ret = ctx.response.status(201).header('etag', 'abc')
     assert.equal(ret, ctx.response, 'chain returns itself')
-    assert.equal(ctx.httpContext.response.getStatus(), 201)
-    assert.equal(ctx.httpContext.response.getHeader('etag'), 'abc')
+    assert.equal((ctx.response as XrpcResponse<any>).state.status, 201)
+    assert.equal((ctx.response as XrpcResponse<any>).state.headers.get('etag'), 'abc')
   })
 
-  test('body() buffers locally (does not commit to Adonis response)', ({ assert }) => {
+  test('json() buffers the body for the executor and flips bodySet', ({ assert }) => {
     const ctx = makeContext()
-    ctx.response.body({ id: 'x' } as any)
-    // .state exposes the buffered body for the dispatch executor to read.
-    assert.deepEqual(ctx.response.state.body, { id: 'x' })
-    assert.isTrue(ctx.response.state.hasExplicitBody)
-    // Body is NOT committed to httpCtx.response — atcute's serializer / framing
-    // layer (Plan 03) reads the buffered value and constructs the wire Response.
-    assert.isUndefined(ctx.httpContext.response.getBody())
+    ;(ctx.response as XrpcResponse<any>).json({ id: 'x' })
+    const state = (ctx.response as XrpcResponse<any>).state
+    assert.deepEqual(state.body, { id: 'x' })
+    assert.isTrue(state.bodySet)
   })
 
-  test('state snapshots status + headers from the underlying HttpResponse', ({ assert }) => {
+  test('bodySet defaults to false when json() is never called', ({ assert }) => {
     const ctx = makeContext()
-    ctx.response.status(201).header('etag', 'abc')
-    const snapshot = ctx.response.state
-    assert.equal(snapshot.status, 201)
-    assert.equal(snapshot.headers.etag, 'abc')
-    assert.isFalse(snapshot.hasExplicitBody)
+    ctx.response.status(204)
+    const state = (ctx.response as XrpcResponse<any>).state
+    assert.isFalse(state.bodySet)
+    assert.isUndefined(state.body)
   })
 
-  test('redirect() sets status + location on httpCtx.response', ({ assert }) => {
+  test('initial state has empty Headers and undefined status / body / redirect', ({ assert }) => {
+    const ctx = makeContext()
+    const state = (ctx.response as XrpcResponse<any>).state
+    assert.isUndefined(state.status)
+    assert.isUndefined(state.body)
+    assert.isUndefined(state.redirect)
+    assert.isFalse(state.bodySet)
+    assert.instanceOf(state.headers, Headers)
+    assert.equal([...state.headers].length, 0)
+  })
+
+  test('redirect() records url + status on state', ({ assert }) => {
     const ctx = makeContext()
     ctx.response.redirect('https://cdn.example/blob.bin', 302)
-    assert.equal(ctx.httpContext.response.getStatus(), 302)
-    assert.equal(ctx.httpContext.response.getHeader('location'), 'https://cdn.example/blob.bin')
+    const state = (ctx.response as XrpcResponse<any>).state
+    assert.deepEqual(state.redirect, { url: 'https://cdn.example/blob.bin', status: 302 })
   })
 })
 
@@ -1762,24 +1757,29 @@ Create `factories/xrpc.ts`:
 
 ```ts
 import { HttpContextFactory } from '@adonisjs/core/factories/http'
-import type { HttpContext } from '@adonisjs/core/http'
+import type { HttpRequest, Logger } from '@adonisjs/core/http'
+import type { ContainerResolver } from '@adonisjs/core/container'
 import { XrpcContext } from '../src/context.js'
-import { adonisRequestToWebRequest } from '../src/utils.js'
 import type { XrpcLexicon, InferInput, InferParams } from '../src/types.js'
 
 interface MergeParams<L extends XrpcLexicon> {
-  httpCtx: HttpContext
   lexicon: L
-  request: Request
+  request: HttpRequest
   input: unknown
   params: Record<string, any>
   signal: AbortSignal
+  logger: Logger
+  containerResolver: ContainerResolver
+  requestId: string
 }
 
 /**
- * Test-facing builder for XrpcContext. Carries sensible defaults for
- * every field — tests merge only the fields that matter for the
- * assertion under test, parallel to Adonis's HttpContextFactory.
+ * Test-facing builder for XrpcContext. Carries sensible defaults for every
+ * field — tests merge only the fields that matter for the assertion under
+ * test, parallel to Adonis's HttpContextFactory. Defaults derive from a
+ * fresh `HttpContextFactory().create()` (same source the production
+ * HTTP-path materialization uses via `fromHttpContext()` in Plan 03), so
+ * test fixtures stay aligned with real dispatch.
  */
 export class XrpcContextFactory {
   #params: Partial<MergeParams<XrpcLexicon>> = {}
@@ -1795,21 +1795,25 @@ export class XrpcContextFactory {
       throw new Error('XrpcContextFactory: lexicon is required — call .merge({ lexicon }) first')
     }
 
-    const httpCtx = this.#params.httpCtx ?? new HttpContextFactory().create()
-    // Default the Fetch Request to one derived from httpCtx.request via the
-    // canonical conversion (src/utils.ts). Same path Plan 03's dispatch
-    // middleware uses on real traffic, so test fixtures stay aligned.
-    const request =
-      this.#params.request ?? adonisRequestToWebRequest(httpCtx.request, 'http://localhost')
+    // Materialize defaults from a fresh HttpContext only when the caller
+    // hasn't supplied them — most tests only care about lexicon / input /
+    // params and let the rest default.
+    const httpCtx = new HttpContextFactory().create()
+    const request = this.#params.request ?? httpCtx.request
+    const logger = this.#params.logger ?? httpCtx.logger
+    const containerResolver = this.#params.containerResolver ?? httpCtx.containerResolver
+    const requestId = this.#params.requestId ?? httpCtx.request.id() ?? 'test-req-id'
     const signal = this.#params.signal ?? new AbortController().signal
 
     return new XrpcContext<L>({
-      httpCtx,
       lexicon,
       request,
       input: (this.#params.input as InferInput<L>) ?? (undefined as any),
       params: (this.#params.params as InferParams<L>) ?? ({} as InferParams<L>),
       signal,
+      logger,
+      containerResolver,
+      requestId,
     })
   }
 }
@@ -1857,10 +1861,13 @@ test.group('XrpcContextFactory', () => {
     assert.deepEqual(ctx.params, { limit: 50 })
   })
 
-  test('uses a fresh HttpContextFactory by default', ({ assert }) => {
+  test('defaults logger / containerResolver / request from a fresh HttpContextFactory', ({
+    assert,
+  }) => {
     const ctx = new XrpcContextFactory().merge({ lexicon: procedureLex }).create()
-    assert.isObject(ctx.httpContext)
-    assert.isFunction(ctx.httpContext.logger.info)
+    assert.isFunction(ctx.logger.info)
+    assert.isObject(ctx.containerResolver)
+    assert.isFunction((ctx.request as any).header) // Adonis HttpRequest API surface
   })
 })
 ```

@@ -79,7 +79,7 @@ This package's implementation only delivers the framework primitives those consu
 
 ## Prerequisites
 
-Consumers must set `useAsyncLocalStorage: true` in `config/app.ts`. This enables AdonisJS's per-request `HttpContext` ALS, which the package relies on for the HTTP-triggered XRPC dispatch path — the registered handler closures (running inside `@atcute/xrpc-server`'s router internals) access the triggering `HttpContext` via `HttpContext.getOrFail()`, which requires the ALS to be active.
+Consumers must set `useAsyncLocalStorage: true` in `config/app.ts`. This enables AdonisJS's per-request `HttpContext` ALS, which the package relies on for the HTTP-triggered XRPC dispatch path — the shared executor reads the triggering `HttpContext` via `HttpContext.get()`, which requires the ALS to be active. The package enforces the flag at boot: `XrpcServer.start()` checks `HttpContext.usingAsyncLocalStorage` and throws a clear `RuntimeException` if it's `false` (the executor would otherwise return `null` from `HttpContext.get()` and dispatch would silently misbehave).
 
 Without this flag, HTTP-triggered XRPC requests would have no reliable way to access the request-scoped HttpContext (logger, containerResolver, response state) from inside the handler closure, since atcute's router doesn't expose Adonis-specific context. The flag is opt-in for plain Adonis apps, but mandatory for this package.
 
@@ -156,6 +156,7 @@ export {
   AuthRequiredError,
   ForbiddenError,
   InvalidRequestError,
+  NotFoundError,
   RateLimitExceededError,
   InternalServerError,
   UpstreamFailureError,
@@ -185,26 +186,40 @@ export { XrpcContextFactory } from './factories/http.js'
 
 ### Router getter: `router.xrpc`
 
-The package's provider, during `register()`, calls `router.getter('xrpc', ...)` (AdonisJS's Macroable mechanism) to attach an `xrpc` property:
+The package's provider attaches the `router.xrpc` accessor via `Router.macro(...)` (AdonisJS's Macroable mechanism on the `Router` class itself). The XrpcRouter is registered as a container singleton in `register()`; the macro is installed in `boot()` and closes over the resolved singleton so it can return synchronously:
 
 ```ts
-// in xrpc_provider.ts
-import router from '@adonisjs/core/services/router'
+// in providers/provider.ts
 
-router.getter('xrpc', function () {
-  return new XrpcRouter(this.app)
+// register(): just the container binding (sync).
+this.app.container.singleton(XrpcRouter, () => new XrpcRouter(this.app))
+this.app.container.alias('xrpcRouter', XrpcRouter)
+
+// boot(): resolve eagerly so the macro can return synchronously —
+// `router.xrpc.procedure(...)` is called synchronously at consumer
+// route-definition time, so the getter can't hand back a Promise.
+// Router instances don't expose `app`/container themselves (their `#app`
+// field is private), so closure capture from boot() is the only way to
+// thread the resolved XrpcRouter into the macro body.
+const xrpcRouter = await this.app.container.make(XrpcRouter)
+Router.macro('xrpc', function () {
+  return xrpcRouter
 })
 ```
 
-Plus TypeScript module augmentation in `src/types.ts`:
+Plus TypeScript module augmentation in `src/types.ts` (NOT in the provider — keeping it in `types.ts` makes the augmentation visible everywhere the package's types are loaded, without forcing each `router.xrpc` consumer to add a side-effect import of the provider just for typecheck):
 
 ```ts
+import type { XrpcRouter } from './router.js'
+
 declare module '@adonisjs/core/http' {
   interface Router {
     xrpc: XrpcRouter
   }
 }
 ```
+
+The type-only circular reference (`types.ts` ↔ `router.ts`) is fine because both sides use `import type` for their cross-references — TypeScript resolves these at type-check time only, no runtime cycle.
 
 `XrpcRouter` exposes the typed declaration API. The handler shapes mirror Adonis's own router types (`get` / `post` / etc.) — accepting either an inline function or a `[Controller | LazyImport<Controller>, methodName?]` tuple, with a `GetXrpcControllerHandlers` helper that narrows method names to those accepting `XrpcContext<L>` as the first parameter:
 
@@ -317,12 +332,35 @@ interface RouteAuthDecl {
   optional: boolean
 }
 
+// User-facing input accepted by procedure / query / subscription. Mirrors the
+// `RouteFn | [..., method?]` union @adonisjs/http-server's router accepts.
+type XrpcHandlerInput =
+  | XrpcRouteFn<any>
+  | XrpcSubscriptionFn<any>
+  | [LazyImport<any> | Constructor<any>, string?]
+
+// Stored form after #register normalizes the input via @adonisjs/fold's
+// moduleCaller / moduleImporter (the same primitives @adonisjs/http-server uses
+// in src/router/route.ts#resolveRouteHandle). Plan 03's dispatch executor
+// branches on `kind`:
+//   - 'function': inline handler — call fn(ctx) directly (no resolver indirection).
+//   - 'controller': controller ref (eager class or lazy import) — call
+//     handle(resolver, ctx) for container-DI on both constructor and method.
+// `name` on the controller branch comes from fold's .toHandleMethod() —
+// 'ClassName.method' for eager refs, the import function's .name for lazy. The
+// NSID is the route's identity; `name` is a secondary label for Plan 06's
+// list:xrpc:routes and Plan 04's error-reporter context.
+type NormalizedHandler =
+  | { kind: 'function'; fn: (ctx: any) => any }
+  | {
+      kind: 'controller'
+      name: string
+      handle: (resolver: ContainerResolver, ctx: any) => Promise<unknown>
+    }
+
 interface RouteInfo {
   lexicon: XrpcLexicon
-  handler:
-    | XrpcRouteFn<any>
-    | XrpcSubscriptionFn<any>
-    | [LazyImport<any> | Constructor<any>, string?]
+  handler: NormalizedHandler
   // The accumulated auth declaration from any group + per-route .serviceAuth() calls.
   // Composed additively: route's flag OR'd with group's; optional flag OR'd from both.
   auth: RouteAuthDecl
@@ -450,30 +488,59 @@ class XrpcRouter extends Macroable {
     lexicon: L,
     handler: XrpcRouteFn<L> | [LazyImport<T> | T, GetXrpcControllerHandlers<T, L>?]
   ): XrpcRoute {
-    return this.#register(lexicon, handler)
+    return this.#register(lexicon, handler as XrpcHandlerInput)
   }
 
   query<L extends XrpcQueryLexicon, T extends Constructor<any>>(
     lexicon: L,
     handler: XrpcRouteFn<L> | [LazyImport<T> | T, GetXrpcControllerHandlers<T, L>?]
   ): XrpcRoute {
-    return this.#register(lexicon, handler)
+    return this.#register(lexicon, handler as XrpcHandlerInput)
   }
 
   subscription<L extends XrpcSubscriptionLexicon, T extends Constructor<any>>(
     lexicon: L,
     handler: XrpcSubscriptionFn<L> | [LazyImport<T> | T, GetXrpcControllerHandlers<T, L>?]
   ): XrpcRoute {
-    return this.#register(lexicon, handler)
+    return this.#register(lexicon, handler as XrpcHandlerInput)
   }
 
-  #register(lexicon: XrpcLexicon, handler: RouteInfo['handler']): XrpcRoute {
+  #register(lexicon: XrpcLexicon, handler: XrpcHandlerInput): XrpcRoute {
     if (this.#committed) throw new RuntimeException('Cannot register XRPC routes after commit')
     const auth = this.#newAuthDecl()
     const route = new XrpcRoute(auth)
-    this.#operations.set(lexicon.id, { lexicon, handler, auth })
+    this.#operations.set(lexicon.id, {
+      lexicon,
+      handler: this.#normalizeHandler(handler),
+      auth,
+    })
     this.#groupContext.at(-1)?.routes.push(route)
     return route
+  }
+
+  // Normalizes a user-facing handler input into the stored NormalizedHandler.
+  // Inline functions stay on the cheap call path; controller refs go through
+  // @adonisjs/fold's moduleCaller (eager class) or moduleImporter (lazy import).
+  // Class-vs-lazy discrimination uses a `^class ` regex on Function.prototype.toString
+  // — the same primitive @sindresorhus/is.class() uses, inlined to avoid the dep
+  // for one check (Node 24+ ESM target; no legacy transpiled-class detection needed).
+  #normalizeHandler(handler: XrpcHandlerInput): NormalizedHandler {
+    if (typeof handler === 'function') {
+      return { kind: 'function', fn: handler }
+    }
+    if (!Array.isArray(handler)) {
+      throw new RuntimeException(
+        'XRPC handler must be an inline function or a [Controller | LazyImport, method?] tuple',
+      )
+    }
+    const [refOrLazy, method = 'handle'] = handler
+    const isClass =
+      typeof refOrLazy === 'function' &&
+      /^class\s/.test(Function.prototype.toString.call(refOrLazy))
+    const m = isClass
+      ? moduleCaller(refOrLazy, method).toHandleMethod()
+      : moduleImporter(refOrLazy, method).toHandleMethod()
+    return { kind: 'controller', name: m.name, handle: m.handle }
   }
 
   /** Constructs a fresh RouteAuthDecl, inheriting the active group context (if any). */
@@ -490,8 +557,13 @@ class XrpcRouter extends Macroable {
     return this.#committed
   }
 
-  get operations(): Record<string, RouteInfo> {
-    return Object.fromEntries(this.#operations.entries())
+  // Returned as a ReadonlyMap (not a plain object) so user-controlled NSID
+  // lookups in the executor can't accidentally hit Object.prototype members
+  // — e.g. a crafted `/xrpc/__proto__` URL would resolve to Object.prototype
+  // on a plain object, but Map.get('__proto__') returns undefined cleanly.
+  // No defensive copy — ReadonlyMap is type-only; consumers are internal.
+  get operations(): ReadonlyMap<string, RouteInfo> {
+    return this.#operations
   }
 
   /**
@@ -510,25 +582,27 @@ class XrpcRouter extends Macroable {
 
 ### `XrpcServer` — internal dispatch orchestrator
 
-`XrpcServer` lives in `src/xrpc_server.ts` and owns the dispatch-side state: the atcute `XRPCRouter`, the WebSocket helper from `createNodeWebSocket()`, and the shared executor. It exposes a single public lifecycle method, `start()`, that the provider calls during `ready()` after `router.xrpc.commit()` has frozen the builder. This shape mirrors how AdonisJS core's [ignitor/http.ts](https://github.com/adonisjs/core/blob/7.x/src/ignitor/http.ts) drives `HttpServerProcess.start()`.
+`XrpcServer` lives in `src/xrpc_server.ts` and owns the dispatch-side state: the atcute `XRPCRouter`, the WebSocket helper from `createNodeWebSocket()`, and the shared executor. It exposes a single public lifecycle method, `start()`, that the provider calls during `ready()` after the provider's `start()` hook has already called `router.xrpc.commit()` to freeze the builder. This shape mirrors how AdonisJS core's [ignitor/http.ts](https://github.com/adonisjs/core/blob/7.x/src/ignitor/http.ts) drives `HttpServerProcess.start()`.
 
 `XrpcServer` is **not** in `services/` — it's an internal class, never exposed to consumers. The consumer-facing facade is `XrpcService` (see below).
+
+The constructor object uses the unprefixed names `router` (the atcute `XRPCRouter`) and `serializer` — there's only one of each on the class, so the `xrpc*` prefix would be redundant. The provider's local variable for the package's own `XrpcRouter` (also resolved via `container.make('xrpcRouter')`) is distinct and stays named `xrpcRouter` to disambiguate from the atcute router.
 
 ```ts
 class XrpcServer {
   #app: ApplicationService
-  #xrpcRouter: XRPCRouter
+  #router: XRPCRouter
   #ws: ReturnType<typeof createNodeWebSocket>
   #executor: SharedXrpcExecutor
 
   constructor(deps: {
     app: ApplicationService
-    xrpcRouter: XRPCRouter
+    router: XRPCRouter
     ws: ReturnType<typeof createNodeWebSocket>
     executor: SharedXrpcExecutor
   }) {
     this.#app = deps.app
-    this.#xrpcRouter = deps.xrpcRouter
+    this.#router = deps.router
     this.#ws = deps.ws
     this.#executor = deps.executor
   }
@@ -538,16 +612,37 @@ class XrpcServer {
    * nodeServer from the container, wires the frozen builder's routes into
    * atcute's XRPCRouter, and installs the WebSocket upgrade handler.
    *
-   * Caller (provider.ready()) must have already called router.xrpc.commit().
-   * No-ops cleanly if no nodeServer is available (non-HTTP environments).
+   * The provider's `start()` hook (which fires before `ready()`) commits
+   * `router.xrpc` first — by the time XrpcServer.start() runs, the builder
+   * is sealed. `#installRoutes` keeps a defense-in-depth `!committed` check
+   * for direct test invocations that bypass the provider.
+   *
+   * Routes always install (no node-server dependency); the WS upgrade
+   * handler is conditional on a node server being attached (non-HTTP
+   * environments and tests using request injection skip it).
    */
   async start(): Promise<void> {
+    // The executor reads the request-scoped HttpContext via HttpContext.get()
+    // (HTTP path). Without useAsyncLocalStorage: true in config/app.ts, that
+    // returns null on every request and dispatch silently breaks. Fail loudly
+    // at start() instead — the configure command (Plan 01) verifies this flag,
+    // but the runtime guard catches the case where someone disabled it after.
+    if (!HttpContext.usingAsyncLocalStorage) {
+      throw new RuntimeException(
+        'XRPC dispatch requires useAsyncLocalStorage: true in config/app.ts (http section)',
+      )
+    }
+
+    // Routes always install — no dependency on a Node HTTP server. The HTTP
+    // dispatch flows through Adonis's middleware pipeline, which doesn't
+    // care whether the server is bound to a port. Only the WS upgrade
+    // handler genuinely needs a node server.
     const router = await this.#app.container.make('router')
+    this.#installRoutes(router.xrpc)
+
     const appServer = await this.#app.container.make('server')
     const nodeServer = appServer.getNodeServer()
     if (!nodeServer) return
-
-    this.#installRoutes(router.xrpc)
     this.#installWebSocketHandler(nodeServer, appServer)
   }
 
@@ -557,26 +652,45 @@ class XrpcServer {
         'XRPC builder must be committed before installing routes; call router.xrpc.commit() first',
       )
     }
-    for (const route of Object.values(xrpc.operations)) {
+    for (const route of xrpc.operations.values()) {
       switch (route.lexicon.type) {
         case 'xrpc_procedure':
-          this.#xrpcRouter.addProcedure(route.lexicon, { handler: this.#executor })
+          this.#router.addProcedure(route.lexicon, { handler: this.#executor })
           break
         case 'xrpc_query':
-          this.#xrpcRouter.addQuery(route.lexicon, { handler: this.#executor })
+          this.#router.addQuery(route.lexicon, { handler: this.#executor })
           break
         case 'xrpc_subscription':
-          this.#xrpcRouter.addSubscription(route.lexicon, { handler: this.#executor })
+          this.#router.addSubscription(route.lexicon, { handler: this.#executor })
           break
       }
     }
   }
 
   #installWebSocketHandler(nodeServer: http.Server, appServer: AdonisServer): void {
-    // Listener #1 — ours, registered first so its ALS context is established before
-    // atcute's processing runs in the same emit('upgrade', ...) execution.
-    nodeServer.on('upgrade', (req) => {
-      if (!req.url?.startsWith('/xrpc/')) return
+    // Snip-and-wrap. Let atcute register its 'upgrade' listener, then capture
+    // it and replace with our URL-filtering wrapper so non-XRPC upgrades
+    // (Vite HMR, app-defined WS endpoints) pass through to other listeners.
+    const beforeCount = nodeServer.listenerCount('upgrade')
+    this.#ws.injectWebSocket(nodeServer, this.#router)
+    // Read the listeners array once and derive the after-count from .length —
+    // saves a separate listenerCount() call vs. asking the EventEmitter twice.
+    const upgradeListeners = nodeServer.listeners('upgrade')
+    const addedCount = upgradeListeners.length - beforeCount
+    if (addedCount !== 1) {
+      throw new RuntimeException(
+        `@atcute/xrpc-server-node.injectWebSocket added ${addedCount} upgrade listeners (expected 1)`,
+      )
+    }
+    const atcuteListener = upgradeListeners[upgradeListeners.length - 1] as (
+      req: IncomingMessage,
+      socket: Duplex,
+      head: Buffer,
+    ) => Promise<void>
+    nodeServer.removeListener('upgrade', atcuteListener)
+
+    nodeServer.on('upgrade', async (req, socket, head) => {
+      if (!req.url?.startsWith('/xrpc/')) return // let Vite / app listeners handle
 
       const synthRes = new ServerResponse(req)
       const httpRequest = appServer.createRequest(req, synthRes)
@@ -589,16 +703,14 @@ class XrpcServer {
       resolver.bindValue(Logger, httpCtx.logger)
 
       httpContextStore.enterWith(httpCtx)
-    })
 
-    // Listener #2 — atcute's, registered second. Inherits our ALS store via the
-    // synchronous emit chain → async promise continuations.
-    this.#ws.injectWebSocket(nodeServer, this.#xrpcRouter)
+      await atcuteListener(req, socket, head)
+    })
   }
 
   /** Read accessor for the dispatch middleware (XrpcDispatchMiddleware). */
   get router(): XRPCRouter {
-    return this.#xrpcRouter
+    return this.#router
   }
 }
 
@@ -608,13 +720,16 @@ class XrpcServer {
  * dispatch-time dependencies captured in closure scope. Matches Adonis's
  * functional executor pattern (src/router/executor.ts) — stateless per-request,
  * receives its dependencies via the surrounding closure.
+ *
+ * Return type: HTTP path returns the serialized body (atcute's XRPCRouter wraps
+ * it into a Response downstream); subscription path returns an AsyncIterable.
  */
 type SharedXrpcExecutor = (
   atcuteCtx: UnknownOperationContext | UnknownSubscriptionContext,
-) => Promise<Response | undefined> | AsyncIterable<unknown>
+) => Promise<unknown> | AsyncIterable<unknown>
 
 function createXrpcExecutor(deps: {
-  operations: Record<Nsid, RouteInfo>
+  operations: ReadonlyMap<Nsid, RouteInfo>
   xrpc: XrpcService
   serviceJwtVerifier: ServiceJwtVerifier
   xrpcSerializer: XrpcSerializer
@@ -622,16 +737,27 @@ function createXrpcExecutor(deps: {
   const { builder, xrpc, serviceJwtVerifier, xrpcSerializer } = deps
 
   return async (atcuteCtx) => {
-    const httpCtx = HttpContext.getOrFail() ?? httpContextStore.getStore()!
+    // HttpContext.get() returns `HttpContext | null` (doesn't throw); the `??`
+    // falls through to the subscription-path ALS when the HTTP-path ALS is
+    // empty (i.e. when atcute dispatched us from a WebSocket upgrade, not an
+    // HTTP request). useAsyncLocalStorage: true is enforced at provider boot
+    // — see XrpcServer.start().
+    const httpCtx = HttpContext.get() ?? httpContextStore.getStore()!
 
     // atcute doesn't forward the NSID to the handler — its router parses NSID
     // internally to look up the registered route, but the context object only
     // carries request/signal/params. We re-derive the NSID from the URL using
     // the same slice atcute uses internally:
     const nsid = new URL(atcuteCtx.request.url).pathname.slice('/xrpc/'.length)
-    const route = operations[nsid]
+    const route = operations.get(nsid)
 
-    if (!route) // invariant error? InternalServerError?
+    if (!route) {
+      // 404 — no such method on this server. Map.get() also makes this branch
+      // safe against prototype-name URLs (`/xrpc/__proto__` etc.) — Map.get()
+      // returns undefined cleanly, where an object lookup would return
+      // Object.prototype and bypass the guard.
+      throw new NotFoundError(`No XRPC method registered for NSID '${nsid}'`)
+    }
 
     // Auth: construct an XrpcAuth holding the service-JWT verifier. Verification
     // runs lazily on first resolve() call. For required-auth routes
@@ -665,20 +791,37 @@ function createXrpcExecutor(deps: {
       await auth.resolveOrFail() // throws AuthRequiredError; caught by outer try/catch
     }
 
-    const handler = isControllerRef(route.handler)
-      ? await resolveControllerMethod(httpCtx.containerResolver, route.handler)
-      : route.handler
+    // Handler resolution is done — route.handler is already the normalized
+    // form (XrpcRouter.#normalizeHandler ran at register time). The executor
+    // just branches on the discriminator. Inline functions take the cheap
+    // `fn(ctx)` path; controller refs go through fold's pre-built handle
+    // closure with method-level DI, import caching, and HMR baked in.
+    const invokeHandler = (ctx: XrpcContext<any>): unknown =>
+      route.handler.kind === 'function'
+        ? route.handler.fn(ctx)
+        : route.handler.handle(httpCtx.containerResolver, ctx)
 
-    // Enter the XrpcContext ALS scope before invoking the handler — XrpcContext.getOrFail()
-    // reads from this ALS, so anything called downstream from the handler (services, models,
-    // helpers) can access the current XRPC context without explicit parameter threading. The
-    // store stays alive through the handler's async continuations.
+    // HTTP path: enter the XrpcContext ALS scope and await the handler. The
+    // await continuations propagate the store across microtask boundaries, so
+    // downstream XrpcContext.getOrFail() works through service/model calls.
+    //
+    // Subscription path: DO NOT wrap iteration of the returned AsyncIterable
+    // in als.run here. Async generators capture ALS context at each .next()
+    // call (NOT at construction) — a one-shot als.run around the iterator
+    // creation puts atcute's eventual .next() resumptions in atcute's
+    // context, not ours. wrapSubscriptionIterator below takes xrpcCtx and
+    // re-enters the scope on each inner .next() call.
+    if (route.lexicon.type === 'xrpc_subscription') {
+      const userIterable = XrpcContext.als.run(
+        xrpcCtx,
+        () => invokeHandler(xrpcCtx) as AsyncIterable<unknown>,
+      )
+      return wrapSubscriptionIterator(userIterable, xrpcCtx, httpCtx, xrpcSerializer)
+    }
+
     return XrpcContext.als.run(xrpcCtx, async () => {
       try {
-        if (route.lexicon.type === 'xrpc_subscription') {
-          return wrapSubscriptionIterator(handler(xrpcCtx), httpCtx, xrpcSerializer)
-        }
-        const result = await handler(xrpcCtx)
+        const result = await invokeHandler(xrpcCtx)
         return await xrpcSerializer.serializeWithoutWrapping(result, httpCtx.containerResolver)
       } catch (err) {
         const xrpcError = err instanceof XrpcError ? err : new InternalServerError(err.message)
@@ -688,7 +831,6 @@ function createXrpcExecutor(deps: {
       }
     })
   }
-}
 }
 ```
 
@@ -825,16 +967,20 @@ Until either (a) the ecosystem standardizes a server-side introspection pattern 
 
 ### Lifecycle phases
 
-The `XrpcRouter.commit()` boundary establishes a well-defined ordering between route declaration and active dispatch. Concretely, in app boot order:
+The `XrpcRouter.commit()` boundary establishes a well-defined ordering between route declaration and active dispatch. The provider distributes its work across AdonisJS's five lifecycle hooks per the framework's documented use-case mapping ([register=IoC bindings, boot=extend framework classes, start=register routes/warm caches, ready=attach to running server/WebSockets, shutdown=cleanup connections](https://docs.adonisjs.com/guides/concepts/service-providers)). Each hook has different env-gating depending on what it does.
 
-1. **Provider `register()`** (synchronous) — package installs the `router.xrpc` macroable getter, installs the `HttpContext.xrpc` macroable getter, and registers container singleton factories for the `XrpcService` and the `XrpcServer`. No objects are constructed yet — the factories defer construction until first resolution. This is the synchronous-only phase per AdonisJS convention.
-2. **Provider `boot()`** (async) — package reads `defineConfig({ serviceDid, resolver })`, constructs the `ServiceJwtVerifier`, calls `createNodeWebSocket()` from `@atcute/xrpc-server-node` to get the WebSocket helper, constructs the `XRPCRouter` instance with `{ websocket: ws.adapter, handleException, handleSubscriptionException }` wired, constructs the `XrpcSerializer` and the shared executor (closing over the builder reference, the verifier, the `XrpcService` for error-handler resolution, and the serializer). Constructs the `XrpcServer` with `{ app, xrpcRouter, ws, executor }`. The builder's routes map is still empty; the `XRPCRouter` has no routes yet. The provider stashes the `XrpcServer` instance as a private field for use in `ready()`.
-3. **Preloads** — `start/routes.ts` (and any other preload) runs. `router.xrpc.{procedure, query, subscription}(...)` calls populate the builder's registry. The `XRPCRouter` still has no routes; the builder's public methods write only to the registry.
-4. **`hooks.init`** — runs after preloads. The phase-2 codegen hook (`indexXrpc()`) reads the now-populated registry to emit typed abstract base classes for any controller-reference registrations. The registry is closed-to-additions at this point conceptually, but `commit()` hasn't fired yet.
-5. **Provider `ready()`** — calls `router.xrpc.commit()` to freeze the builder (after which declaration methods throw), then `await this.#xrpcServer.start()`. `XrpcServer.start()` acquires the Adonis router, appServer, and nodeServer from the container, then internally wires the frozen routes into atcute's `XRPCRouter` (`#installRoutes`) and installs the WebSocket upgrade handler (`#installWebSocketHandler` — registers the synthetic-HttpContext + ALS upgrade listener BEFORE atcute's, then calls `ws.injectWebSocket(nodeServer, xrpcRouter)`).
-6. **First request** — the `XrpcDispatchMiddleware` (or the upgrade-event listener for subscriptions) hands the request to the committed `XRPCRouter`, which routes to the shared executor function.
+In app boot order:
 
-After commit, `procedure` / `query` / `subscription` / `group` all throw `RuntimeException`. This is the same boundary AdonisJS's `router.commit()` establishes — once routes are active, the declaration surface is sealed.
+1. **Provider `register()`** (sync) — registers the `XrpcRouter` as a container singleton and aliases `'xrpcRouter'` to it. No objects beyond the binding factory exist yet. Runs in all environments (container bindings are env-agnostic). Plan 04 adds: register `XrpcService` factory here too.
+2. **Provider `boot()`** (async) — resolves the `XrpcRouter` singleton eagerly (so the macro below can close over it) and installs the `router.xrpc` macro via `Router.macro('xrpc', function () { return xrpcRouter })`. Closure capture is required because `Router` instances don't expose `app`/container — the macro's `this` binds to the Router, not the provider. Runs in all environments. Plan 04 adds: install the `HttpContext.xrpc` macro here too.
+3. **Preloads** — `start/routes.ts` (and any other preload) runs. `router.xrpc.{procedure, query, subscription}(...)` calls populate the builder's registry. Per Adonis convention, preloads run in all environments by default — so XRPC routes are registered in console/test envs too (which is what makes Plan 06's `list:xrpc:routes` ace command possible).
+4. **Provider `start()`** (async) — calls `router.xrpc.commit()` to freeze the builder. **Not gated on environment** — ace commands (Plan 06's `list:xrpc:routes`) running in `console` env need to read the same canonical committed registry the web server would. Commit in all envs makes that registry consistent regardless of who's reading it. After commit, declaration methods throw — the same boundary AdonisJS's `router.commit()` establishes.
+5. **`hooks.init`** — phase-2 codegen hook (`indexXrpc()`) reads the committed registry to emit typed abstract base classes for any controller-reference registrations.
+6. **Provider `ready()`** (async, **web-only**) — early-returns when `env !== 'web'`. Otherwise: calls `createNodeWebSocket()` from `@atcute/xrpc-server-node`, constructs the atcute `XRPCRouter` with the WS adapter, constructs the `XrpcSerializer` and the shared executor (closing over the operations registry and the serializer; Plan 04 widens to include the `XrpcService` for error-reporting, Plan 05 widens for auth), constructs the `XrpcServer` with `{ app, router, ws, executor }`, container-binds it via `bindValue(XrpcServer, ...)`, then `await xrpcServer.start()`. `XrpcServer.start()` acquires the Adonis router + appServer + nodeServer from the container, wires the frozen routes into atcute's `XRPCRouter` (`#installRoutes`), then installs the WS upgrade handler (`#installWebSocketHandler` — calls `ws.injectWebSocket(nodeServer, router)`, snips atcute's listener, replaces with a URL-filtering wrapper so non-XRPC upgrades fall through). This phase is web-only because the dispatch infrastructure has no use in console/test envs — the registry alone is enough for tooling.
+7. **First request** — the `XrpcDispatchMiddleware` (or the upgrade-event listener for subscriptions) hands the request to the committed `XRPCRouter`, which routes to the shared executor function.
+8. **Provider `shutdown()`** (async, **web-only**, Plan 04) — graceful WebSocket teardown: flip a `#shuttingDown` flag so new upgrades no-op; iterate `wss.clients` and send `close(1001, 'going away')`; wait briefly for ack with a hard timeout; force `.terminate()` survivors. HTTP-side shutdown is fully covered by Adonis's existing graceful-shutdown machinery — no additional action needed there.
+
+**Why the per-hook env split matters**: a common shortcut in third-party Adonis providers is `if (env !== 'web') return` at the top of every hook, which makes the provider effectively a no-op outside the web server. That breaks ace tooling that needs to read provider-managed state (like `list:xrpc:routes` needing the committed registry). Splitting per-hook — bindings + framework extension + commit in all envs; server construction + WS handler in web only — gives each hook the right scope.
 
 **HMR**: AdonisJS's HMR restarts the entire app process when `start/routes.ts` changes, which means the `XrpcRouter` is reconstructed from scratch and `commit()` re-runs naturally. No `reset()` method needed — the commit pattern works cleanly under HMR by virtue of the framework's restart semantics.
 
@@ -878,10 +1024,19 @@ The two paths use different mechanisms because each path's lifecycle is differen
 
 ### Dispatch: WebSocket upgrade (subscription)
 
-WebSocket connections don't traverse HTTP middleware — they're handled by the Node server's `'upgrade'` event. The upgrade-handling logic lives inside `XrpcServer.#installWebSocketHandler` (called by `XrpcServer.start()` during the provider's `ready()`):
+WebSocket connections don't traverse HTTP middleware — they're handled by the Node server's `'upgrade'` event. The upgrade-handling logic lives inside `XrpcServer.#installWebSocketHandler` (called by `XrpcServer.start()` during the provider's `ready()`), and uses a **snip-and-wrap** pattern around atcute's `injectWebSocket`:
 
-- Listener #1 — ours, registered FIRST so it runs first in the synchronous chain. It builds the HttpContext from the upgrade request and `enterWith()`s it on the ALS, making it available throughout the rest of atcute's processing chain (which runs synchronously in the same `emit('upgrade', ...)` execution, then asynchronously via promise continuations that inherit the ALS context).
-- Listener #2 — atcute's, registered SECOND via `ws.injectWebSocket(nodeServer, xrpcRouter)`. Its emit-time execution inherits our ALS store via the synchronous-chain → async-continuation propagation. The same `ws` object was created during `boot()` (so its `ws.adapter` could be passed into the `XRPCRouter` constructor); `XrpcServer` reuses it for the upgrade install.
+1. Call `ws.injectWebSocket(nodeServer, xrpcRouter)` — atcute registers its `'upgrade'` listener via plain `server.on(...)`. The same `ws` object was created during `boot()` (so its `ws.adapter` could be passed into the `XRPCRouter` constructor); `XrpcServer` reuses it for the upgrade install.
+2. Immediately read `nodeServer.listeners('upgrade')`, pull the last entry (atcute's listener), `removeListener` it, and verify the snapshot's `listenerCount('upgrade')` delta was exactly 1 (fail-loud guard against atcute's internals changing).
+3. Register a single wrapping listener of our own. The wrapper checks `req.url?.startsWith('/xrpc/')`:
+   - **Non-XRPC upgrade**: return early without touching the socket. Other registered listeners (Vite HMR's `/_vite/hmr`, app-defined WS endpoints) handle it cleanly.
+   - **XRPC upgrade**: build the synthetic HttpContext from the upgrade `IncomingMessage`, `enterWith()` it on the package's `httpContextStore`, then `await` atcute's captured listener.
+
+**Why snip-and-wrap, not register-before**: the naive design ("our listener first, atcute's second; ours sets the ALS, atcute's inherits it") doesn't filter by URL. atcute's listener dispatches every upgrade through `router.fetch()` and `socket.end()`s the response for non-matches. That breaks **Vite HMR in dev** (AdonisJS's Vite integration relies on WebSocket upgrades reaching its `/_vite/hmr` handler) and any consumer-defined non-XRPC WS endpoint. The snip-and-wrap fixes this by giving us a single filtering point upstream of atcute.
+
+**Brittleness**: we depend on `injectWebSocket` adding exactly one `'upgrade'` listener. Verified at runtime via the listener-count delta check (throws a clear `RuntimeException` on mismatch). Verified at plan-execution time against atcute trunk (Plan 03 Task 1 Step 3).
+
+**TODO (upstream)**: a small PR to `@atcute/xrpc-server-node` adding `createNodeWebSocket({ urlPredicate: (req) => boolean })` would eliminate the snip-and-wrap dance — `#installWebSocketHandler` would collapse to a single `injectWebSocket` call with the predicate doing the URL filter. Tracking issue against `mary-ext/atcute` to file after Plan 03 ships.
 
 The provider's `ready()` itself stays minimal — it commits the builder and delegates the rest to `XrpcServer.start()`:
 
@@ -900,25 +1055,42 @@ The full upgrade-listener implementation lives in `XrpcServer.#installWebSocketH
 
 The `enterWith()`-vs-`run()` choice: the Node docs prefer `run()` because `enterWith()` persists for the entire synchronous execution including subsequent event handlers. In our case this is precisely the desired behavior — atcute's listener fires next in the same synchronous chain and needs to inherit the store. The "leak" the docs warn about is consumer-registered listeners on the same event inheriting our store; the store value is the same `IncomingMessage` they already receive as an argument, so the leak is information-equivalent. The package keeps the `wss` reference private to discourage consumers from adding their own `'connection'` listeners on it.
 
+**Concurrent-upgrade safety** (verified empirically on Node 26): a natural concern is that two clients handshaking in the same I/O callback would mean two `enterWith` calls back-to-back, with the second overwriting the first — and any async work scheduled during the first emit might then "see" the second emit's store. This doesn't happen. When async work is scheduled (via `await`, `setTimeout`, etc.), Node's async-hooks `init` hook captures the current ALS store at scheduling time and binds it to the new async resource. Later `enterWith` calls mutate the current resource's store but don't retroactively rewrite previously-created resources' stores — so emit-A's microtasks restore ctxA when they run, even after emit-B's `enterWith(ctxB)`. The Node docs phrase this as "persists the store through any *following* asynchronous calls" — *following* is doing the work; the persistence is forward-looking, not retroactive.
+
 ### Subscription dispatch — executor branches
 
-Subscription dispatch uses the same shared executor described earlier — there's no separate "subscription wrapper" function, just a method-specific branch within the executor. When `route.lexicon.type === 'xrpc_subscription'`, the executor invokes the user's `AsyncIterable`-returning handler and wraps the iterator with a transforming generator that serializes each yielded value before atcute encodes it as a CBOR frame:
+Subscription dispatch uses the same shared executor described earlier — there's no separate "subscription wrapper" function, just a method-specific branch within the executor. When `route.lexicon.type === 'xrpc_subscription'`, the executor invokes the user's `AsyncIterable`-returning handler and wraps the iterator with a transforming generator that (a) re-enters the `XrpcContext.als` scope on every inner `.next()` call so downstream `XrpcContext.getOrFail()` works from inside handler yields, and (b) serializes each yielded value before atcute encodes it as a CBOR frame:
 
 ```ts
-// Within the executor, for the subscription branch:
+// Within the executor, for the subscription branch. The handler() call that
+// constructs the AsyncIterable runs inside als.run so any service it
+// invokes synchronously sees the context. The wrap helper then re-enters
+// als.run on every .next() to keep downstream getOrFail() working as
+// atcute iterates the wrapper from outside our scope.
 if (route.lexicon.type === 'xrpc_subscription') {
-  return wrapSubscriptionIterator(userHandler(xrpcCtx), httpCtx, xrpcSerializer)
+  const userIterable = XrpcContext.als.run(xrpcCtx, () => userHandler(xrpcCtx))
+  return wrapSubscriptionIterator(userIterable, xrpcCtx, httpCtx, xrpcSerializer)
 }
 
 // wrapSubscriptionIterator is also a shared helper, not per-route:
 async function* wrapSubscriptionIterator(
   iterable: AsyncIterable<unknown>,
+  xrpcCtx: XrpcContext<XrpcLexicon>,
   httpCtx: HttpContext,
-  serializer: XrpcSerializer
+  serializer: XrpcSerializer,
 ) {
+  const inner = iterable[Symbol.asyncIterator]()
   try {
-    for await (const value of iterable) {
-      yield await serializer.serializeWithoutWrapping(value, httpCtx.containerResolver)
+    while (true) {
+      // Each .next() runs inside the XrpcContext ALS scope — the user's
+      // generator body resumes inside this scope, so downstream
+      // XrpcContext.getOrFail() sees `xrpcCtx`. Async generators capture
+      // context at .next() time (NOT at construction); a one-shot als.run
+      // at iterator creation doesn't propagate to subsequent resumptions
+      // when iteration happens outside the scope (atcute drives iteration).
+      const result = await XrpcContext.als.run(xrpcCtx, () => inner.next())
+      if (result.done) return
+      yield await serializer.serializeWithoutWrapping(result.value, httpCtx.containerResolver)
     }
   } catch (err) {
     const xrpcError = err instanceof XrpcError ? err : new InternalServerError(err.message)
@@ -940,10 +1112,22 @@ class XrpcContext<L extends XrpcLexicon> extends Macroable {
   constructor(params: { /* see executor closure for the shape */ }) { super(); /* ... */ }
 
   /**
-   * Internal ALS holding the current XrpcContext instance. The executor calls
-   * `XrpcContext.als.run(xrpcCtx, () => handler(xrpcCtx))` before invoking the
-   * user's handler, so anything called downstream from the handler can access
-   * the current context via `XrpcContext.getOrFail()` without explicit threading.
+   * Internal ALS holding the current XrpcContext instance.
+   *
+   * - HTTP path (procedure/query): the executor wraps handler invocation in
+   *   `XrpcContext.als.run(xrpcCtx, async () => await handler(xrpcCtx))` —
+   *   `await` continuations propagate the store across microtask boundaries.
+   *
+   * - Subscription path: a one-shot `als.run` around the iterator's
+   *   construction does NOT propagate to subsequent `.next()` resumptions
+   *   (async generators capture context at each `.next()` call, not at
+   *   construction). `wrapSubscriptionIterator` therefore drives each inner
+   *   `.next()` from inside `XrpcContext.als.run(xrpcCtx, ...)`, so the
+   *   user's generator body resumes inside the scope on every yield.
+   *
+   * Result: anything called downstream from the handler can access the
+   * current context via `XrpcContext.getOrFail()` without explicit threading
+   * in either path.
    */
   static readonly als: AsyncLocalStorage<XrpcContext<XrpcLexicon>>
 
@@ -1492,6 +1676,11 @@ class InvalidRequestError extends XrpcError {
   static code = 'E_INVALID_REQUEST'
   static errorName = 'InvalidRequest'
 }
+class NotFoundError extends XrpcError {
+  static status = 404
+  static code = 'E_NOT_FOUND'
+  static errorName = 'NotFound'
+}
 class RateLimitExceededError extends XrpcError {
   static status = 429
   static code = 'E_RATE_LIMITED'
@@ -1689,7 +1878,25 @@ test('subscribeLabels yields backfill events from cursor', async ({ app }) => {
 })
 ```
 
-Functional tests of the WebSocket transport itself (real HTTP server, real upgrade) build on the patterns the labeler already uses (per memory: "Functional tests use real HTTP, not request injection").
+Functional tests of the WebSocket transport itself (real HTTP server or synthetic upgrade) use the package's public test affordances:
+
+- **`@thisismissem/adonisjs-atproto-xrpc/test_utils`** — exports `injectXrpcSubscription(server, lexicon, options?)`, an XRPC-aware wrapper over [`light-my-websocket`](https://npmjs.com/package/light-my-websocket)'s `injectWS`. Constructs `/xrpc/<lexicon.id>?<params>` URLs, fires a synthetic `'upgrade'` emit on a Node `http.Server` (no port binding required), and returns an `InjectedXrpcSubscription` exposing `messages(): AsyncIterable<DecodedFrame>` plus `close()`. Use from tests that don't want to bind real ports.
+- **`@thisismissem/adonisjs-atproto-xrpc/event-stream/framing`** — exports `decodeFrame(buffer)`, `encodeFrame(frame)`, and the typed `DecodedFrame` discriminated union (`{ type: 'message', body, discriminator? } | { type: 'error', error, message? }`) plus `FrameHeader` / `ErrorFrameBody` interfaces. Atcute ships the CBOR primitives (`@atcute/cbor`) but not a high-level frame decoder — this fills the gap for both this package's own `test_utils.injectXrpcSubscription` and consumer code (subscription clients, stub servers in tests, debug tooling). Public surface, not test-only: any subscription consumer needs frame encode/decode regardless of test context.
+
+```ts
+import { injectXrpcSubscription } from '@thisismissem/adonisjs-atproto-xrpc/test_utils'
+
+const stream = await injectXrpcSubscription(nodeServer, subscribeLabels)
+for await (const frame of stream.messages()) {
+  if (frame.type === 'message' && frame.discriminator === '#labels') {
+    assert.equal((frame.body as any).seq, expectedSeq)
+    break
+  }
+}
+await stream.close()
+```
+
+Real-HTTP / real-WS-client tests are still possible (the labeler's existing tests use that pattern), but the synthetic-upgrade path via `injectXrpcSubscription` is faster, port-binding-free, and the recommended default.
 
 ## Commands
 
@@ -1868,6 +2075,23 @@ Items the package might grow into post-v1:
 - **Strict-mode auth declarations** — opt-in `defineConfig({ requireExplicitAuth: true })` flag that makes any route declaring neither `.serviceAuth()` nor an explicit `.public()` throw at `commit()`. Use case: Ozone-style services where most routes are authenticated and a missing declaration is more likely a forgotten `.serviceAuth()` than an intentionally-public route. The default stays public (aligning with the Lexicon spec's `auth: absent` default); strict-mode is a per-consumer audit-style affordance, not a posture flip.
 
 - **Custom serializer extension via `defineConfig({ serializer })`** — let consumers supply their own `XrpcSerializer` subclass to customize wrap keys, pagination metadata transformation, or contract-handling behavior. v1 ships the serializer as internal-only (`XrpcSerializer` constructed directly by the dispatch layer, not re-exported from `index.ts`) because no consumer use case has surfaced — the default pass-through serializer matches `@adonisjs/inertia`'s precedent and covers the canonical atproto pagination shape without customization. When a real need appears, the migration is purely additive: re-export `XrpcSerializer` from the package root, add a `serializer?: typeof XrpcSerializer` field to `XrpcConfig`, default to `XrpcSerializer` in `defineConfig`, and change the dispatch construction site from `new XrpcSerializer()` to `new config.serializer()`. Non-breaking in every direction.
+
+## Amendments since 2026-05-25
+
+The sections above have been amended in-place for load-bearing decisions made during Plan 03 drafting and review. The following are smaller drift items where the canonical truth lives in Plan 03 (`docs/plans/2026-05-24-xrpc-plan-03-dispatch.md`) rather than this spec — recorded here so future readers know to cross-reference:
+
+| Drift | Spec says | Plan 03 says |
+|-------|-----------|--------------|
+| Provider filename | `providers/xrpc_provider.ts` | `providers/provider.ts` |
+| Router declarations file | `src/builder.ts` | `src/router.ts` |
+| Subscription handler context module | `src/http_context.ts` | `httpContextStore` lives inside `src/xrpc_server.ts` |
+| Test factory module | `factories/http.ts` | `factories/xrpc.ts` |
+| Test helpers entry shape | (not specified) | `src/test_utils.ts` (flat single file at `src/` — not `src/test_utils/index.ts`) |
+| Subpath exports list | omits `./test_utils`, `./event-stream/framing` | both ship in Plan 03 |
+| `XrpcService` + `services/xrpc.ts` | shown in § Package layout as Plan 03 scope | Plan 04 ships these (provider in Plan 03 is minimal) |
+| `services/router.ts` singleton accessor | shown in § Package layout | descoped — no consumer use case for the atcute `XRPCRouter` outside the dispatch path |
+
+Plan 03 is the source of truth for all of the above. When the spec next gets a comprehensive rewrite, fold these inline; until then, treat the spec's § Package layout and § Public exports as historical snapshots.
 
 ## Related work
 

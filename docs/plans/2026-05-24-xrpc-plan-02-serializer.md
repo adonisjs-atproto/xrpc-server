@@ -81,7 +81,46 @@ All imports go through `@adonisjs/core/transformers` (the re-export path) — co
 
 **Steps:**
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Implement `src/serializer.ts`**
+
+Create `src/serializer.ts`:
+
+```ts
+import { BaseSerializer } from '@adonisjs/core/transformers'
+
+/**
+ * The package's internal serializer for XRPC response bodies. Extends
+ * `BaseSerializer` (re-exported from `@adonisjs/core/transformers`) to
+ * unpack transformer contracts (`Item` / `Collection` / `Paginator`) that
+ * consumer handlers embed into their return value, before atcute frames
+ * the result onto the wire (JSON for procedure/query; CBOR for subscription
+ * messages).
+ *
+ * Two design choices vs. the default serializer shape:
+ *
+ * - `wrap = undefined` — XRPC wire format is `InferOutput<L>` bare; there's
+ *   no `data` envelope key. The lexicon's output schema is the contract.
+ * - `definePaginationMetaData` is the identity function — the package has no
+ *   opinion on what pagination meta should look like; the lexicon's output
+ *   schema (e.g. `cursor: string`) is the source of truth, and the consumer's
+ *   transformer / handler is responsible for producing that shape.
+ *
+ * Consumers who need to customize either can extend this class and pass
+ * the subclass via `defineConfig({ serializer: MyXrpcSerializer })` once
+ * Plan 04 lands the config slot.
+ */
+export class XrpcSerializer extends BaseSerializer<{
+  PaginationMetaData: unknown
+}> {
+  wrap = undefined as undefined
+
+  definePaginationMetaData(metaData: unknown): unknown {
+    return metaData
+  }
+}
+```
+
+- [ ] **Step 2: Write tests for the serializer**
 
 Create `tests/serializer.spec.ts`:
 
@@ -201,58 +240,14 @@ test.group('XrpcSerializer', (group) => {
 
 **Important — about the import paths**: The test imports `BaseTransformer`, `Item`, `Collection`, `Paginator` from `@adonisjs/core/transformers` (the re-export confirmed in Step 0b). If any of these symbols are missing from that re-export (`node -e "console.log(Object.keys(await import('@adonisjs/core/transformers')))"`), import the missing ones directly from `@adonisjs/http-transformers` and add it as a direct dep — but the Adonis core re-export is expected to cover all of them.
 
-- [ ] **Step 2: Run test to verify it fails**
-
-Run: `pnpm quick:test --files tests/serializer.spec.ts`
-Expected: FAIL with `Cannot find module '../src/serializer.js'`.
-
-- [ ] **Step 3: Implement `src/serializer.ts`**
-
-Create `src/serializer.ts`:
-
-```ts
-import { BaseSerializer } from '@adonisjs/core/transformers'
-
-/**
- * The package's internal serializer for XRPC response bodies. Extends
- * `BaseSerializer` (re-exported from `@adonisjs/core/transformers`) to
- * unpack transformer contracts (`Item` / `Collection` / `Paginator`) that
- * consumer handlers embed into their return value, before atcute frames
- * the result onto the wire (JSON for procedure/query; CBOR for subscription
- * messages).
- *
- * Two design choices vs. the default serializer shape:
- *
- * - `wrap = undefined` — XRPC wire format is `InferOutput<L>` bare; there's
- *   no `data` envelope key. The lexicon's output schema is the contract.
- * - `definePaginationMetaData` is the identity function — the package has no
- *   opinion on what pagination meta should look like; the lexicon's output
- *   schema (e.g. `cursor: string`) is the source of truth, and the consumer's
- *   transformer / handler is responsible for producing that shape.
- *
- * Consumers who need to customize either can extend this class and pass
- * the subclass via `defineConfig({ serializer: MyXrpcSerializer })` once
- * Plan 04 lands the config slot.
- */
-export class XrpcSerializer extends BaseSerializer<{
-  PaginationMetaData: unknown
-}> {
-  wrap = undefined as undefined
-
-  definePaginationMetaData(metaData: unknown): unknown {
-    return metaData
-  }
-}
-```
-
-- [ ] **Step 4: Run test to verify it passes**
+- [ ] **Step 3: Run tests to verify they pass**
 
 Run: `pnpm quick:test --files tests/serializer.spec.ts`
 Expected: PASS — 7 tests.
 
-If any test fails because `BaseTransformer` / `Item` / `Collection` weren't found at the expected import path, refer back to Step 1's note and Step 0b's exports check — adjust the imports in the test (not the implementation) and re-run.
+If any test fails because `BaseTransformer` / `Item` / `Collection` weren't found at the expected import path, refer back to Step 2's note and Step 0b's exports check — adjust the imports in the test (not the implementation) and re-run.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
 git add src/serializer.ts tests/serializer.spec.ts

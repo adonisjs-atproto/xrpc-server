@@ -1,6 +1,7 @@
 import { IgnitorFactory } from '@adonisjs/core/factories/core/ignitor'
 import { TestUtilsFactory } from '@adonisjs/core/factories/core/test_utils'
 import { getActiveTest } from '@japa/runner'
+import { createServer } from 'node:http'
 
 export const BASE_URL = new URL('../tmp/', import.meta.url)
 export const IMPORTER = (filePath: string) => {
@@ -39,22 +40,10 @@ export async function setupApp(
     .merge({
       rcFileContents: {
         providers: [
-          () => import('@adonisjs/lucid/database_provider'),
           // () => import('../providers/provider.js'),
         ],
       },
-      config: {
-        database: {
-          connection: 'sqlite',
-          connections: {
-            sqlite: {
-              client: 'better-sqlite3',
-              connection: { filename: ':memory:' },
-              useNullAsDefault: true,
-            },
-          },
-        },
-      },
+      config: {},
     })
     .merge(parameters)
 
@@ -65,6 +54,17 @@ export async function setupApp(
   await testUtils.app.boot()
   if (hooks.beforeReady) await hooks.beforeReady(testUtils.app)
   await testUtils.boot()
+
+  await testUtils.app.start(async () => {
+    // Attach a Node http.Server WITHOUT calling .listen() — gives
+    // appServer.getNodeServer() a target so XrpcServer.#installWebSocketHandler
+    // can register its upgrade listener. injectXrpcSubscription will emit
+    // 'upgrade' directly on this server. No port binding.
+    const adonisServer = await testUtils.app.container.make('server')
+    await adonisServer.boot()
+    const nodeServer = createServer(adonisServer.handle.bind(adonisServer))
+    adonisServer.setNodeServer(nodeServer)
+  })
 
   const terminate = async () => {
     await testUtils.app.terminate()

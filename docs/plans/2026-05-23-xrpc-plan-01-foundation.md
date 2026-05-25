@@ -30,7 +30,7 @@
 ### Modify
 
 - `package.json` — add deps + subpath exports + extend `tsdown.entry`
-- `src/types.ts` — re-export lexicon-type primitives from `@atcute/lexicons`; add `XrpcLexicon`, `XrpcProcedureLexicon`, `XrpcQueryLexicon`, `XrpcSubscriptionLexicon`, `InferInput`, `InferParams`, `InferOutput`, `XrpcMessage` aliases plus the `XrpcConfig` surface
+- `src/types.ts` — re-export lexicon-type primitives from `@atcute/lexicons`; add `XrpcLexicon`, `XrpcProcedureLexicon`, `XrpcQueryLexicon`, `XrpcSubscriptionLexicon`, `InferInput`, `InferParams`, `InferOutput`, `XrpcMessage` aliases plus the `XrpcConfig` surface. Also carries the `declare module '@adonisjs/core/http' { interface Router { xrpc: XrpcRouter } }` augmentation (appended after `src/router.ts` exists — Task 6 Step 4) so `router.xrpc` is typed everywhere `src/types.ts` is in scope without per-file side-effect imports
 - `src/define_config.ts` — strengthen typing once `XrpcProviderConfig` has real fields (`serviceDid` is required; other fields land in later plans)
 - `configure.ts` — verify `useAsyncLocalStorage: true`; prompt to enable if missing
 - `stubs/config.stub` — populate with `serviceDid` example
@@ -217,7 +217,89 @@ git commit -m "feat(xrpc): replace placeholder types with @atcute/lexicons-backe
 
 **Steps:**
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Implement `src/errors.ts`**
+
+Create `src/errors.ts`:
+
+```ts
+import { Exception } from '@poppinss/exception'
+
+/**
+ * Base class for all XRPC-domain errors. Three orthogonal name slots:
+ *
+ * - `name` (inherited from Error): JS class name, used for stack traces and
+ *   `instanceof` discrimination.
+ * - `code`: machine-readable JS-level error code, used for log filtering and
+ *   error-recovery routing in the host application.
+ * - `errorName`: atproto wire-format error category. Goes into the `error`
+ *   field of the XRPC wire response and matches the lexicon's `errors[].name`.
+ */
+export class XrpcError extends Exception {
+  static status = 500
+  static code = 'E_XRPC_ERROR'
+  static errorName = 'InternalServerError'
+
+  get errorName(): string {
+    return (this.constructor as typeof XrpcError).errorName
+  }
+}
+
+export class AuthRequiredError extends XrpcError {
+  static status = 401
+  static code = 'E_AUTH_REQUIRED'
+  static errorName = 'AuthenticationRequired'
+}
+
+export class ForbiddenError extends XrpcError {
+  static status = 403
+  static code = 'E_FORBIDDEN'
+  static errorName = 'Forbidden'
+}
+
+export class InvalidRequestError extends XrpcError {
+  static status = 400
+  static code = 'E_INVALID_REQUEST'
+  static errorName = 'InvalidRequest'
+}
+
+export class NotFoundError extends XrpcError {
+  static status = 404
+  static code = 'E_NOT_FOUND'
+  static errorName = 'NotFound'
+}
+
+export class RateLimitExceededError extends XrpcError {
+  static status = 429
+  static code = 'E_RATE_LIMITED'
+  static errorName = 'RateLimitExceeded'
+}
+
+export class InternalServerError extends XrpcError {
+  static status = 500
+  static code = 'E_INTERNAL_ERROR'
+  static errorName = 'InternalServerError'
+}
+
+export class UpstreamFailureError extends XrpcError {
+  static status = 502
+  static code = 'E_UPSTREAM_FAILURE'
+  static errorName = 'UpstreamFailure'
+}
+
+export class NotEnoughResourcesError extends XrpcError {
+  static status = 503
+  static code = 'E_NOT_ENOUGH_RESOURCES'
+  static errorName = 'NotEnoughResources'
+}
+
+export class UpstreamTimeoutError extends XrpcError {
+  static status = 504
+  static code = 'E_UPSTREAM_TIMEOUT'
+  static errorName = 'UpstreamTimeout'
+}
+```
+
+- [ ] **Step 2: Write tests for the error hierarchy**
 
 Create `tests/errors.spec.ts`:
 
@@ -316,98 +398,17 @@ test.group('XrpcError', () => {
 })
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
-
-Run: `pnpm quick:test --files tests/errors.spec.ts`
-Expected: FAIL with `Cannot find module '../src/errors.js'`.
-
-- [ ] **Step 3: Implement `src/errors.ts`**
-
-Create `src/errors.ts`:
-
-```ts
-import { Exception } from '@poppinss/exception'
-
-/**
- * Base class for all XRPC-domain errors. Three orthogonal name slots:
- *
- * - `name` (inherited from Error): JS class name, used for stack traces and
- *   `instanceof` discrimination.
- * - `code`: machine-readable JS-level error code, used for log filtering and
- *   error-recovery routing in the host application.
- * - `errorName`: atproto wire-format error category. Goes into the `error`
- *   field of the XRPC wire response and matches the lexicon's `errors[].name`.
- */
-export class XrpcError extends Exception {
-  static status = 500
-  static code = 'E_XRPC_ERROR'
-  static errorName = 'InternalServerError'
-
-  get errorName(): string {
-    return (this.constructor as typeof XrpcError).errorName
-  }
-}
-
-export class AuthRequiredError extends XrpcError {
-  static status = 401
-  static code = 'E_AUTH_REQUIRED'
-  static errorName = 'AuthenticationRequired'
-}
-
-export class ForbiddenError extends XrpcError {
-  static status = 403
-  static code = 'E_FORBIDDEN'
-  static errorName = 'Forbidden'
-}
-
-export class InvalidRequestError extends XrpcError {
-  static status = 400
-  static code = 'E_INVALID_REQUEST'
-  static errorName = 'InvalidRequest'
-}
-
-export class RateLimitExceededError extends XrpcError {
-  static status = 429
-  static code = 'E_RATE_LIMITED'
-  static errorName = 'RateLimitExceeded'
-}
-
-export class InternalServerError extends XrpcError {
-  static status = 500
-  static code = 'E_INTERNAL_ERROR'
-  static errorName = 'InternalServerError'
-}
-
-export class UpstreamFailureError extends XrpcError {
-  static status = 502
-  static code = 'E_UPSTREAM_FAILURE'
-  static errorName = 'UpstreamFailure'
-}
-
-export class NotEnoughResourcesError extends XrpcError {
-  static status = 503
-  static code = 'E_NOT_ENOUGH_RESOURCES'
-  static errorName = 'NotEnoughResources'
-}
-
-export class UpstreamTimeoutError extends XrpcError {
-  static status = 504
-  static code = 'E_UPSTREAM_TIMEOUT'
-  static errorName = 'UpstreamTimeout'
-}
-```
-
-- [ ] **Step 4: Verify `@poppinss/exception` is reachable**
+- [ ] **Step 3: Verify `@poppinss/exception` is reachable**
 
 Run: `pnpm info @poppinss/exception version`
 Expected: a version string. If not installed, run `pnpm add @poppinss/exception` and re-run the typecheck. (It is normally a transitive dep of `@adonisjs/core`, but make it explicit because we import from it directly.)
 
-- [ ] **Step 5: Run test to verify it passes**
+- [ ] **Step 4: Run tests to verify they pass**
 
 Run: `pnpm quick:test --files tests/errors.spec.ts`
 Expected: PASS — 3 tests.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add src/errors.ts tests/errors.spec.ts package.json pnpm-lock.yaml
@@ -429,7 +430,51 @@ We delegate to atcute's canonical DID guard rather than rolling our own regex: a
 
 **Steps:**
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Verify atcute's DID guard import path**
+
+Atcute exposes a DID guard, but the exact subpath / name varies across versions. Confirm the canonical import before writing the implementation:
+
+```bash
+pnpm info @atcute/lexicons exports | grep -i did
+node -e "console.log(Object.keys(await import('@atcute/lexicons')).filter(k => k.toLowerCase().includes('did')))"
+```
+
+Expected: either `isDid` is exported from `@atcute/lexicons` directly, or it lives under a subpath like `@atcute/lexicons/syntax`. If the guard is named differently (`isValidDid`, `validateDid`, etc.), or if it's a branded-type guard whose signature differs from `(value: unknown) => value is Did`, adjust the Step 4 import line and call site accordingly.
+
+If no DID guard is available from atcute (e.g. you're on an older version that doesn't expose one), fall back to the regex inlined in the previous draft of this task — `^did:[a-z0-9]+:[a-zA-Z0-9._:%-]+$` — and note the fallback in the commit message.
+
+- [ ] **Step 2: Update `src/define_config.ts`**
+
+Replace its contents with (adjusting the `isDid` import per Step 1):
+
+```ts
+import { isDid } from '@atcute/lexicons'
+import { InvalidArgumentsException } from '@poppinss/utils'
+import type { XrpcConfig, XrpcProviderConfig } from './types.js'
+
+/**
+ * Validates and returns the package config. Throws `InvalidArgumentsException`
+ * if `serviceDid` is not a syntactically-valid DID — a bad value here would
+ * otherwise surface much later as opaque service-JWT verification failures.
+ *
+ * Delegates the DID-syntax check to `@atcute/lexicons`'s `isDid` guard so all
+ * package + consumer code agrees on what counts as a DID (resolver, JWT
+ * verifier, config validator).
+ *
+ * The generic `T` keeps the call site's literal types intact so future config
+ * fields can be inferred from the consumer's defineConfig() call.
+ */
+export function defineConfig<T extends XrpcProviderConfig>(config: T): T & XrpcConfig {
+  if (!isDid(config.serviceDid)) {
+    throw new InvalidArgumentsException(
+      `defineConfig: serviceDid must be a valid DID (e.g. "did:plc:..." or "did:web:...") — got ${JSON.stringify(config.serviceDid)}`
+    )
+  }
+  return config
+}
+```
+
+- [ ] **Step 3: Write tests for defineConfig**
 
 Replace `tests/define_config.spec.ts` with:
 
@@ -481,66 +526,17 @@ test.group('defineConfig — rejects malformed serviceDid', () => {
 })
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
-
-Run: `pnpm quick:test --files tests/define_config.spec.ts`
-Expected: FAIL — the rejection cases all pass through the current passthrough `defineConfig` without throwing.
-
-- [ ] **Step 3: Verify atcute's DID guard import path**
-
-Atcute exposes a DID guard, but the exact subpath / name varies across versions. Confirm the canonical import before writing the implementation:
-
-```bash
-pnpm info @atcute/lexicons exports | grep -i did
-node -e "console.log(Object.keys(await import('@atcute/lexicons')).filter(k => k.toLowerCase().includes('did')))"
-```
-
-Expected: either `isDid` is exported from `@atcute/lexicons` directly, or it lives under a subpath like `@atcute/lexicons/syntax`. If the guard is named differently (`isValidDid`, `validateDid`, etc.), or if it's a branded-type guard whose signature differs from `(value: unknown) => value is Did`, adjust the Step 4 import line and call site accordingly.
-
-If no DID guard is available from atcute (e.g. you're on an older version that doesn't expose one), fall back to the regex inlined in the previous draft of this task — `^did:[a-z0-9]+:[a-zA-Z0-9._:%-]+$` — and note the fallback in the commit message.
-
-- [ ] **Step 4: Update `src/define_config.ts`**
-
-Replace its contents with (adjusting the `isDid` import per Step 3):
-
-```ts
-import { isDid } from '@atcute/lexicons'
-import { InvalidArgumentsException } from '@poppinss/utils'
-import type { XrpcConfig, XrpcProviderConfig } from './types.js'
-
-/**
- * Validates and returns the package config. Throws `InvalidArgumentsException`
- * if `serviceDid` is not a syntactically-valid DID — a bad value here would
- * otherwise surface much later as opaque service-JWT verification failures.
- *
- * Delegates the DID-syntax check to `@atcute/lexicons`'s `isDid` guard so all
- * package + consumer code agrees on what counts as a DID (resolver, JWT
- * verifier, config validator).
- *
- * The generic `T` keeps the call site's literal types intact so future config
- * fields can be inferred from the consumer's defineConfig() call.
- */
-export function defineConfig<T extends XrpcProviderConfig>(config: T): T & XrpcConfig {
-  if (!isDid(config.serviceDid)) {
-    throw new InvalidArgumentsException(
-      `defineConfig: serviceDid must be a valid DID (e.g. "did:plc:..." or "did:web:...") — got ${JSON.stringify(config.serviceDid)}`
-    )
-  }
-  return config
-}
-```
-
-- [ ] **Step 5: Verify `@poppinss/utils` is reachable**
+- [ ] **Step 4: Verify `@poppinss/utils` is reachable**
 
 Run: `pnpm info @poppinss/utils version`
 Expected: a version string. It's a transitive dep of `@adonisjs/core`; if for any reason `InvalidArgumentsException` isn't importable from the package root, fall back to `import { InvalidArgumentsException } from '@poppinss/utils/exception'` or substitute `RuntimeException` from `@adonisjs/core/exceptions`.
 
-- [ ] **Step 6: Run test to verify it passes**
+- [ ] **Step 5: Run tests to verify they pass**
 
 Run: `pnpm quick:test --files tests/define_config.spec.ts`
 Expected: PASS — 13 tests (4 happy-path + 9 rejection cases). If atcute's `isDid` is stricter or looser than expected on a specific case (e.g. it rejects the percent-encoded did:web example, or accepts something the rejection list expects to fail), adjust the test fixtures to reflect atcute's actual contract rather than fighting it — atcute is the source of truth.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add src/define_config.ts tests/define_config.spec.ts
@@ -577,61 +573,7 @@ export default defineConfig({
 })
 ```
 
-- [ ] **Step 2: Write the failing test**
-
-Append to `tests/configure.spec.ts` inside the existing `test.group('Configure', ...)`:
-
-```ts
-test('verifies useAsyncLocalStorage is enabled in config/app.ts', async ({ fs, assert }) => {
-  const ignitor = new IgnitorFactory()
-    .withCoreProviders()
-    .withCoreConfig()
-    .create(BASE_URL, {
-      importer: (filePath) => {
-        if (filePath.startsWith('./') || filePath.startsWith('../')) {
-          return import(new URL(filePath, BASE_URL).href)
-        }
-        return import(filePath)
-      },
-    })
-
-  await fs.create('.env', '')
-  await fs.createJson('tsconfig.json', {})
-  await fs.create('start/env.ts', `export default Env.create(new URL('./'), {})`)
-  await fs.create(
-    'start/kernel.ts',
-    `router.use([])
-export const { middleware } = router.named({
-})`
-  )
-  await fs.create('adonisrc.ts', `export default defineConfig({})`)
-  // Note: NO useAsyncLocalStorage flag — we expect configure to prompt or note this.
-  await fs.create('config/app.ts', `export const http = defineConfig({})`)
-
-  const app = ignitor.createApp('web')
-  await app.init()
-  await app.boot()
-
-  const ace = await app.container.make('ace')
-  ace.prompt.trap(INSTALL_PROMPT).reject()
-  // The new prompt — when useAsyncLocalStorage is missing, configure should
-  // surface it. The test accepts (chooses "yes, enable it") so the file gets
-  // rewritten.
-  ace.prompt.trap('useAsyncLocalStorage is not enabled — enable it now? (required)').accept()
-
-  const command = await ace.create(Configure, ['../../index.js'])
-  await command['exec']()
-
-  await assert.fileContains('config/app.ts', 'useAsyncLocalStorage')
-})
-```
-
-- [ ] **Step 3: Run test to verify it fails**
-
-Run: `pnpm quick:test --files tests/configure.spec.ts`
-Expected: FAIL — the new test fails because configure() does not yet inspect or edit `config/app.ts`.
-
-- [ ] **Step 4: Update `configure.ts`**
+- [ ] **Step 2: Update `configure.ts`**
 
 Replace its contents with:
 
@@ -698,12 +640,61 @@ async function ensureUseAsyncLocalStorage(command: Configure) {
 }
 ```
 
-- [ ] **Step 5: Run test to verify it passes**
+- [ ] **Step 3: Write tests for useAsyncLocalStorage verification**
+
+Append to `tests/configure.spec.ts` inside the existing `test.group('Configure', ...)`:
+
+```ts
+test('verifies useAsyncLocalStorage is enabled in config/app.ts', async ({ fs, assert }) => {
+  const ignitor = new IgnitorFactory()
+    .withCoreProviders()
+    .withCoreConfig()
+    .create(BASE_URL, {
+      importer: (filePath) => {
+        if (filePath.startsWith('./') || filePath.startsWith('../')) {
+          return import(new URL(filePath, BASE_URL).href)
+        }
+        return import(filePath)
+      },
+    })
+
+  await fs.create('.env', '')
+  await fs.createJson('tsconfig.json', {})
+  await fs.create('start/env.ts', `export default Env.create(new URL('./'), {})`)
+  await fs.create(
+    'start/kernel.ts',
+    `router.use([])
+export const { middleware } = router.named({
+})`
+  )
+  await fs.create('adonisrc.ts', `export default defineConfig({})`)
+  // Note: NO useAsyncLocalStorage flag — we expect configure to prompt or note this.
+  await fs.create('config/app.ts', `export const http = defineConfig({})`)
+
+  const app = ignitor.createApp('web')
+  await app.init()
+  await app.boot()
+
+  const ace = await app.container.make('ace')
+  ace.prompt.trap(INSTALL_PROMPT).reject()
+  // The new prompt — when useAsyncLocalStorage is missing, configure should
+  // surface it. The test accepts (chooses "yes, enable it") so the file gets
+  // rewritten.
+  ace.prompt.trap('useAsyncLocalStorage is not enabled — enable it now? (required)').accept()
+
+  const command = await ace.create(Configure, ['../../index.js'])
+  await command['exec']()
+
+  await assert.fileContains('config/app.ts', 'useAsyncLocalStorage')
+})
+```
+
+- [ ] **Step 4: Run tests to verify they pass**
 
 Run: `pnpm quick:test --files tests/configure.spec.ts`
 Expected: PASS — both the original test and the new flag-verification test.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add configure.ts stubs/config.stub tests/configure.spec.ts
@@ -719,11 +710,252 @@ git commit -m "feat(xrpc): configure() verifies useAsyncLocalStorage and seeds s
 - Create: `src/router.ts`
 - Create: `tests/router.spec.ts`
 
-This task delivers `XrpcRouter` + `XrpcRoute` + `XrpcRouteGroup`. **No auth.** The router builder accumulates a routes registry; commit freezes it; declaration methods throw after commit; nested groups throw.
+This task delivers `XrpcRouter` + `XrpcRoute` + `XrpcRouteGroup`. **No auth.** The router builder accumulates a routes registry; declaration methods throw after commit; nested groups throw.
+
+Handler registration is **normalized eagerly** into a discriminated `NormalizedHandler` shape (`{ kind: 'function' } | { kind: 'controller' }`). The controller branch goes through `@adonisjs/fold`'s `moduleCaller` (for eager class refs) and `moduleImporter` (for lazy imports), matching the resolution path Adonis's own `@adonisjs/http-server` uses in `src/router/route.ts#resolveRouteHandle`. This means: (a) inline functions stay on the cheap call path (`fn(ctx)` — no resolver indirection); (b) controller refs get container-DI on both constructor and method (`resolver.call(instance, method, args)`); (c) lazy imports get import caching + HMR awareness for free; (d) class-vs-lazy-import is detected via `is.class(controller)` (the same primitive Adonis uses), not a hand-rolled `prototype` heuristic. Plan 03's dispatch executor consumes the normalized shape with a one-line discriminator branch — it doesn't do its own handler resolution.
 
 **Steps:**
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Implement `src/router.ts`**
+
+Create `src/router.ts`:
+
+```ts
+import Macroable from '@poppinss/macroable'
+import { moduleCaller, moduleImporter, type ContainerResolver } from '@adonisjs/core/container'
+import { RuntimeException } from '@adonisjs/core/exceptions'
+import type { ApplicationService } from '@adonisjs/core/types'
+import type { Constructor, LazyImport } from '@poppinss/utils/types'
+import type {
+  XrpcLexicon,
+  XrpcProcedureLexicon,
+  XrpcQueryLexicon,
+  XrpcSubscriptionLexicon,
+} from './types.js'
+
+/**
+ * The shape passed by consumers to `procedure / query / subscription`. Either
+ * an inline function or a `[Controller | LazyImport<Controller>, methodName?]`
+ * tuple. Mirrors `@adonisjs/http-server`'s `RouteFn | [..., method?]` union in
+ * `src/router/route.ts`.
+ */
+export type XrpcHandlerInput =
+  | ((ctx: any) => any)
+  | [LazyImport<Constructor<any>> | Constructor<any>, string?]
+
+/**
+ * Stored form after `#register` normalizes the input. Plan 03's dispatch
+ * executor branches on `kind`:
+ *
+ * - `function` — inline handler. Executor calls `fn(ctx)` directly.
+ * - `controller` — controller-reference (eager class or lazy import). Executor
+ *   calls `handle(resolver, ctx)`; `@adonisjs/fold`'s `moduleCaller` /
+ *   `moduleImporter` produces the `handle` closure with method-level DI,
+ *   import caching, and HMR awareness baked in.
+ *
+ * The `name` on the controller branch comes from fold's `.toHandleMethod()`
+ * (`'ClassName.method'` for eager refs; the import function's `.name` for
+ * lazy refs). The route's NSID is the authoritative identifier — this `name`
+ * is a secondary "what's serving this NSID" label used by Plan 06's
+ * `list:xrpc:routes` and Plan 04's error-reporter context.
+ */
+export type NormalizedHandler =
+  | { kind: 'function'; fn: (ctx: any) => any }
+  | {
+      kind: 'controller'
+      name: string
+      handle: (resolver: ContainerResolver<any>, ctx: any) => Promise<unknown>
+    }
+
+/**
+ * Per-route registry entry. `handler` is the normalized form — `#register`
+ * runs `#normalizeHandler` on every input before storing. The shared dispatch
+ * executor (Plan 03) reads this map by NSID at request time.
+ *
+ * Auth state is intentionally absent in this plan — Plan 05 attaches an
+ * `auth: RouteAuthDecl` field via declaration merging on RouteInfo (and
+ * the matching `.serviceAuth(...)` builder methods via XrpcRoute.macro
+ * and XrpcRouteGroup.macro).
+ */
+export interface RouteInfo {
+  lexicon: XrpcLexicon
+  handler: NormalizedHandler
+}
+
+/**
+ * Per-route chainable builder. Returned from `router.xrpc.procedure / query
+ * / subscription`. Extends Macroable so plugin packages (and Plan 02's auth)
+ * can attach declarative methods at runtime — e.g.
+ * `XrpcRoute.macro('serviceAuth', fn)`.
+ *
+ * @internal — only XrpcRouter constructs XrpcRoute instances.
+ */
+export class XrpcRoute extends Macroable {
+  constructor(public nsid: string) {
+    super()
+  }
+}
+
+/**
+ * Chainable builder returned from `router.xrpc.group(callback)`. Carries
+ * the list of routes registered inside the callback so a future
+ * `.serviceAuth(...)` macro (Plan 02) can fan flags across them.
+ *
+ * @internal — only XrpcRouter constructs XrpcRouteGroup instances.
+ */
+export class XrpcRouteGroup extends Macroable {
+  constructor(public routes: XrpcRoute[]) {
+    super()
+  }
+}
+
+// Distinguish eager class constructor from lazy-import arrow. ES6 class
+// declarations stringify as `class …`; arrows / plain functions don't.
+// This is what @sindresorhus/is.class() does internally — inlined here to
+// avoid pulling that dep in for one check (we're Node 24+ ESM, so legacy
+// transpiled-class detection isn't needed).
+const isClassRegex = /^class\s/
+const isClass = (value) => {
+  return typeof value === 'function' && isClassRegex.test(Function.prototype.toString.call(value))
+}
+
+/**
+ * Build-time route registry. Macroable so future plugin integrations can
+ * attach declarative methods on the router itself (e.g. a tracing plugin
+ * registering `router.xrpc.tracing(...)`). Mirrors Adonis's own
+ * Router/Route/RouteGroup macroable structure.
+ */
+export class XrpcRouter extends Macroable {
+  #operations = new Map<string, RouteInfo>()
+  #routesByNsid = new Map<string, XrpcRoute>()
+  #committed = false
+  #groupContext: { routes: XrpcRoute[] }[] = []
+
+  constructor(public app: ApplicationService) {
+    super()
+  }
+
+  procedure<L extends XrpcProcedureLexicon>(lexicon: L, handler: XrpcHandlerInput): XrpcRoute {
+    return this.#register(lexicon, handler)
+  }
+
+  query<L extends XrpcQueryLexicon>(lexicon: L, handler: XrpcHandlerInput): XrpcRoute {
+    return this.#register(lexicon, handler)
+  }
+
+  subscription<L extends XrpcSubscriptionLexicon>(
+    lexicon: L,
+    handler: XrpcHandlerInput
+  ): XrpcRoute {
+    return this.#register(lexicon, handler)
+  }
+
+  /**
+   * Declares a route group. Nested groups are not supported in v1; the
+   * stack length invariant is enforced explicitly so future use-cases
+   * (e.g. prefixed sub-groups) can lift the restriction without breaking
+   * the existing semantic.
+   */
+  group(callback: () => void): XrpcRouteGroup {
+    if (this.#committed) {
+      throw new RuntimeException('Cannot declare XRPC groups after commit')
+    }
+    if (this.#groupContext.length > 0) {
+      throw new RuntimeException('Nested xrpc.group() is not supported in v1')
+    }
+
+    const ctx = { routes: [] as XrpcRoute[] }
+    this.#groupContext.push(ctx)
+    try {
+      callback()
+    } finally {
+      this.#groupContext.pop()
+    }
+    return new XrpcRouteGroup(ctx.routes)
+  }
+
+  #register(lexicon: XrpcLexicon, handler: XrpcHandlerInput): XrpcRoute {
+    if (this.#committed) {
+      throw new RuntimeException('Cannot register XRPC routes after commit')
+    }
+    if (this.#operations.has(lexicon.id)) {
+      throw new RuntimeException(`XRPC route already registered for NSID "${lexicon.id}"`)
+    }
+    const route = new XrpcRoute(lexicon.id)
+    this.#operations.set(lexicon.id, { lexicon, handler: this.#normalizeHandler(handler) })
+    this.#routesByNsid.set(lexicon.id, route)
+    this.#groupContext.at(-1)?.routes.push(route)
+    return route
+  }
+
+  /**
+   * Normalizes a user-facing handler input into the stored `NormalizedHandler`
+   * shape. Mirrors `@adonisjs/http-server`'s `route.ts#resolveRouteHandle`:
+   * eager class refs go through `moduleCaller` (constructs via the container
+   * + invokes the method with method-level DI); lazy imports go through
+   * `moduleImporter` (caches the resolved module, re-imports under HMR).
+   * Inline functions bypass both — they stay on the cheap call path.
+   */
+  #normalizeHandler(handler: XrpcHandlerInput): NormalizedHandler {
+    if (typeof handler === 'function') {
+      return { kind: 'function', fn: handler }
+    }
+    if (!Array.isArray(handler)) {
+      throw new RuntimeException(
+        'XRPC handler must be an inline function or a [Controller | LazyImport, method?] tuple'
+      )
+    }
+    const [refOrLazy, method = 'handle'] = handler
+
+    const m = isClass(refOrLazy)
+      ? moduleCaller(refOrLazy as Constructor<any>, method).toHandleMethod()
+      : moduleImporter(
+          refOrLazy as () => Promise<{ default: Constructor<any> }>,
+          method
+        ).toHandleMethod()
+    return { kind: 'controller', name: m.name, handle: m.handle as NormalizedHandler['handle'] }
+  }
+
+  /**
+   * True once `commit()` has run. Reads from this property are how the
+   * dispatch layer (Plan 03) detects whether to install routes.
+   */
+  get committed(): boolean {
+    return this.#committed
+  }
+
+  /**
+   * Read-only view of the registered routes, keyed by NSID. Returned as a
+   * `ReadonlyMap` (not a plain object) so user-controlled NSID lookups in
+   * downstream code (Plan 03's executor) can't accidentally hit
+   * `Object.prototype` members like `'__proto__'` / `'constructor'` /
+   * `'toString'` — `Map.get('__proto__')` returns `undefined` cleanly, unlike
+   * `obj['__proto__']` which returns the prototype. The internal `#operations`
+   * is returned directly (no defensive copy) — `ReadonlyMap` is type-only,
+   * but consumers are internal and the type signals intent.
+   */
+  get operations(): ReadonlyMap<string, RouteInfo> {
+    return this.#operations
+  }
+
+  /** Looks up an XrpcRoute by NSID — used by Plan 02's group fan-out. */
+  routeFor(nsid: string): XrpcRoute | undefined {
+    return this.#routesByNsid.get(nsid)
+  }
+
+  /**
+   * Transitions the builder to its frozen state. Idempotent — safe to call
+   * defensively from anywhere. After commit, declaration methods throw
+   * `RuntimeException`.
+   */
+  commit(): void {
+    if (this.#committed) return
+    this.#committed = true
+  }
+}
+```
+
+- [ ] **Step 2: Write tests for the router**
 
 Create `tests/router.spec.ts`:
 
@@ -749,11 +981,23 @@ test.group('XrpcRouter — declarations', () => {
     r.procedure(procedureLex, async () => ({}))
     r.query(queryLex, async () => ({}))
     r.subscription(subscriptionLex, async function* () {})
-    assert.containsSubset(r.operations, {
-      'com.example.test.proc': { lexicon: procedureLex },
-      'com.example.test.query': { lexicon: queryLex },
-      'com.example.test.sub': { lexicon: subscriptionLex },
-    })
+    assert.equal(r.operations.get('com.example.test.proc')?.lexicon, procedureLex)
+    assert.equal(r.operations.get('com.example.test.query')?.lexicon, queryLex)
+    assert.equal(r.operations.get('com.example.test.sub')?.lexicon, subscriptionLex)
+  })
+
+  test('operations is a ReadonlyMap (not a plain object) — protects against prototype-name lookups', ({
+    assert,
+  }) => {
+    const r = new XrpcRouter(fakeApp())
+    r.procedure(procedureLex, async () => ({}))
+    assert.instanceOf(r.operations, Map)
+    // The point of the Map is that user-controlled NSID lookups can't hit
+    // Object.prototype members. `Map.get('__proto__')` returns undefined
+    // cleanly, unlike `obj['__proto__']` which would return the prototype.
+    assert.isUndefined(r.operations.get('__proto__'))
+    assert.isUndefined(r.operations.get('constructor'))
+    assert.isUndefined(r.operations.get('toString'))
   })
 
   test('procedure() returns an XrpcRoute instance', ({ assert }) => {
@@ -762,13 +1006,54 @@ test.group('XrpcRouter — declarations', () => {
     assert.instanceOf(route, XrpcRoute)
   })
 
-  test('controller-reference handler is stored verbatim and returns an XrpcRoute', ({ assert }) => {
+  test('inline function handler normalizes to { kind: "function" }', ({ assert }) => {
     const r = new XrpcRouter(fakeApp())
-    class FakeController {}
+    const fn = async () => ({ ok: true })
+    r.procedure(procedureLex, fn)
+    const info = r.operations.get('com.example.test.proc')!
+    assert.equal(info.handler.kind, 'function')
+    assert.equal((info.handler as any).fn, fn, 'inline fn stored verbatim under .fn')
+  })
+
+  test('eager controller-class reference normalizes to { kind: "controller" } with a bound name', ({
+    assert,
+  }) => {
+    const r = new XrpcRouter(fakeApp())
+    class FakeController {
+      async create() {}
+    }
     const route = r.procedure(procedureLex, [FakeController, 'create' as any])
     assert.instanceOf(route, XrpcRoute)
-    const info = r.operations['com.example.test.proc']
-    assert.isArray(info.handler)
+    const info = r.operations.get('com.example.test.proc')!
+    assert.equal(info.handler.kind, 'controller')
+    assert.isFunction((info.handler as any).handle, 'normalized controller handler exposes .handle')
+    assert.equal(
+      (info.handler as any).name,
+      'FakeController.create',
+      'moduleCaller sets .name to ClassName.method'
+    )
+  })
+
+  test('lazy-import controller reference normalizes to { kind: "controller" }', ({ assert }) => {
+    const r = new XrpcRouter(fakeApp())
+    class FakeController {
+      async create() {}
+    }
+    const lazy = async () => ({ default: FakeController })
+    r.procedure(queryLex, [lazy as any, 'create' as any])
+    const info = r.operations.get('com.example.test.query')!
+    assert.equal(info.handler.kind, 'controller')
+    assert.isFunction((info.handler as any).handle)
+    // moduleImporter sets .name from the import function's `.name` — anonymous
+    // arrow gives an empty string; what matters is .handle is callable.
+  })
+
+  test('non-function / non-array handler input is rejected at register time', ({ assert }) => {
+    const r = new XrpcRouter(fakeApp())
+    assert.throws(
+      () => r.procedure(procedureLex, 'not-a-handler' as any),
+      /must be an inline function or a \[Controller \| LazyImport, method\?\] tuple/
+    )
   })
 })
 
@@ -848,178 +1133,40 @@ test.group('XrpcRouter — macroable', () => {
 })
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
-
-Run: `pnpm quick:test --files tests/router.spec.ts`
-Expected: FAIL with `Cannot find module '../src/router.js'`.
-
-- [ ] **Step 3: Implement `src/router.ts`**
-
-Create `src/router.ts`:
-
-```ts
-import Macroable from '@poppinss/macroable'
-import { RuntimeException } from '@adonisjs/core/exceptions'
-import type { ApplicationService } from '@adonisjs/core/types'
-import type { Constructor, LazyImport } from '@poppinss/utils/types'
-import type {
-  XrpcLexicon,
-  XrpcProcedureLexicon,
-  XrpcQueryLexicon,
-  XrpcSubscriptionLexicon,
-} from './types.js'
-
-/**
- * Per-route registry entry. `handler` is either an inline function or a
- * [Controller | LazyImport<Controller>, methodName?] tuple. The shared
- * dispatch executor (Plan 03) reads this map by NSID at request time.
- *
- * Auth state is intentionally absent in this plan — Plan 05 attaches an
- * `auth: RouteAuthDecl` field via declaration merging on RouteInfo (and
- * the matching `.serviceAuth(...)` builder methods via XrpcRoute.macro
- * and XrpcRouteGroup.macro).
- */
-export interface RouteInfo {
-  lexicon: XrpcLexicon
-  handler: ((ctx: any) => any) | [LazyImport<Constructor<any>> | Constructor<any>, string?]
-}
-
-/**
- * Per-route chainable builder. Returned from `router.xrpc.procedure / query
- * / subscription`. Extends Macroable so plugin packages (and Plan 02's auth)
- * can attach declarative methods at runtime — e.g.
- * `XrpcRoute.macro('serviceAuth', fn)`.
- *
- * @internal — only XrpcRouter constructs XrpcRoute instances.
- */
-export class XrpcRoute extends Macroable {
-  constructor(public nsid: string) {
-    super()
-  }
-}
-
-/**
- * Chainable builder returned from `router.xrpc.group(callback)`. Carries
- * the list of routes registered inside the callback so a future
- * `.serviceAuth(...)` macro (Plan 02) can fan flags across them.
- *
- * @internal — only XrpcRouter constructs XrpcRouteGroup instances.
- */
-export class XrpcRouteGroup extends Macroable {
-  constructor(public routes: XrpcRoute[]) {
-    super()
-  }
-}
-
-/**
- * Build-time route registry. Macroable so future plugin integrations can
- * attach declarative methods on the router itself (e.g. a tracing plugin
- * registering `router.xrpc.tracing(...)`). Mirrors Adonis's own
- * Router/Route/RouteGroup macroable structure.
- */
-export class XrpcRouter extends Macroable {
-  #operations = new Map<string, RouteInfo>()
-  #routesByNsid = new Map<string, XrpcRoute>()
-  #committed = false
-  #groupContext: { routes: XrpcRoute[] }[] = []
-
-  constructor(public app: ApplicationService) {
-    super()
-  }
-
-  procedure<L extends XrpcProcedureLexicon>(lexicon: L, handler: RouteInfo['handler']): XrpcRoute {
-    return this.#register(lexicon, handler)
-  }
-
-  query<L extends XrpcQueryLexicon>(lexicon: L, handler: RouteInfo['handler']): XrpcRoute {
-    return this.#register(lexicon, handler)
-  }
-
-  subscription<L extends XrpcSubscriptionLexicon>(
-    lexicon: L,
-    handler: RouteInfo['handler']
-  ): XrpcRoute {
-    return this.#register(lexicon, handler)
-  }
-
-  /**
-   * Declares a route group. Nested groups are not supported in v1; the
-   * stack length invariant is enforced explicitly so future use-cases
-   * (e.g. prefixed sub-groups) can lift the restriction without breaking
-   * the existing semantic.
-   */
-  group(callback: () => void): XrpcRouteGroup {
-    if (this.#committed) {
-      throw new RuntimeException('Cannot declare XRPC groups after commit')
-    }
-    if (this.#groupContext.length > 0) {
-      throw new RuntimeException('Nested xrpc.group() is not supported in v1')
-    }
-
-    const ctx = { routes: [] as XrpcRoute[] }
-    this.#groupContext.push(ctx)
-    try {
-      callback()
-    } finally {
-      this.#groupContext.pop()
-    }
-    return new XrpcRouteGroup(ctx.routes)
-  }
-
-  #register(lexicon: XrpcLexicon, handler: RouteInfo['handler']): XrpcRoute {
-    if (this.#committed) {
-      throw new RuntimeException('Cannot register XRPC routes after commit')
-    }
-    if (this.#operations.has(lexicon.id)) {
-      throw new RuntimeException(`XRPC route already registered for NSID "${lexicon.id}"`)
-    }
-    const route = new XrpcRoute(lexicon.id)
-    this.#operations.set(lexicon.id, { lexicon, handler })
-    this.#routesByNsid.set(lexicon.id, route)
-    this.#groupContext.at(-1)?.routes.push(route)
-    return route
-  }
-
-  /**
-   * True once `commit()` has run. Reads from this property are how the
-   * dispatch layer (Plan 03) detects whether to install routes.
-   */
-  get committed(): boolean {
-    return this.#committed
-  }
-
-  /** Read-only snapshot of the registered routes, keyed by NSID. */
-  get operations(): Record<string, RouteInfo> {
-    return Object.fromEntries(this.#operations.entries())
-  }
-
-  /** Looks up an XrpcRoute by NSID — used by Plan 02's group fan-out. */
-  routeFor(nsid: string): XrpcRoute | undefined {
-    return this.#routesByNsid.get(nsid)
-  }
-
-  /**
-   * Transitions the builder to its frozen state. Idempotent — safe to call
-   * defensively from anywhere. After commit, declaration methods throw
-   * `RuntimeException`.
-   */
-  commit(): void {
-    if (this.#committed) return
-    this.#committed = true
-  }
-}
-```
-
-- [ ] **Step 4: Run test to verify it passes**
+- [ ] **Step 3: Run tests to verify they pass**
 
 Run: `pnpm quick:test --files tests/router.spec.ts`
 Expected: PASS — all groups.
 
+- [ ] **Step 4: Append the Adonis `Router` augmentation to `src/types.ts`**
+
+Append the following block to `src/types.ts` (after the existing primitive exports — not in Task 2's snippet because `XrpcRouter` didn't exist yet at that point in the plan).
+
+```ts
+// --- Adonis Router augmentation ----------------------------------------
+//
+// Declared here (rather than in providers/provider.ts) so the augmentation
+// is visible everywhere `src/types.ts` is — including test files and
+// consumer code that import package symbols transitively — without forcing
+// each `router.xrpc` consumer to add a side-effect import of the provider
+// just to satisfy the typechecker. The runtime install (Router.macro) still
+// happens in the provider's `boot()`; this declaration is type-only.
+import type { XrpcRouter } from './router.js'
+
+declare module '@adonisjs/core/http' {
+  interface Router {
+    xrpc: XrpcRouter
+  }
+}
+```
+
+Then run `pnpm typecheck` and confirm zero errors. The type-only circular reference (`types.ts` ↔ `router.ts`) is fine because both sides use `import type` for their cross-references — TypeScript resolves these at type-check time only, no runtime cycle.
+
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/router.ts tests/router.spec.ts
-git commit -m "feat(xrpc): add XrpcRouter / XrpcRoute / XrpcRouteGroup"
+git add src/router.ts src/types.ts tests/router.spec.ts
+git commit -m "feat(xrpc): add XrpcRouter / XrpcRoute / XrpcRouteGroup + Router.xrpc type augmentation"
 ```
 
 ---
@@ -1037,88 +1184,7 @@ Streaming both directions (`Readable.toWeb` and `Readable.fromWeb`) avoids buffe
 
 **Steps:**
 
-- [ ] **Step 1: Write the failing test**
-
-Create `tests/utils.spec.ts`:
-
-```ts
-import { test } from '@japa/runner'
-import { HttpContextFactory } from '@adonisjs/core/factories/http'
-import { adonisRequestToWebRequest, writeWebResponseToAdonisResponse } from '../src/utils.js'
-
-test.group('adonisRequestToWebRequest', () => {
-  test('preserves URL and method', ({ assert }) => {
-    const ctx = new HttpContextFactory().create()
-    const req = adonisRequestToWebRequest(ctx.request, 'http://localhost')
-    assert.instanceOf(req, Request)
-    assert.equal(req.method, ctx.request.method() ?? 'GET')
-  })
-
-  test('forwards headers (string and array values)', ({ assert }) => {
-    const ctx = new HttpContextFactory().create()
-    // HttpContextFactory's default request has no real headers; we patch
-    // headers() to exercise both shapes.
-    const originalHeaders = ctx.request.headers
-    ctx.request.headers = () =>
-      ({
-        'authorization': 'Bearer token',
-        'x-multi': ['a', 'b'],
-      }) as any
-    try {
-      const req = adonisRequestToWebRequest(ctx.request, 'http://localhost')
-      assert.equal(req.headers.get('authorization'), 'Bearer token')
-      assert.equal(req.headers.get('x-multi'), 'a, b')
-    } finally {
-      ctx.request.headers = originalHeaders
-    }
-  })
-
-  test('GET / HEAD requests carry no body', ({ assert }) => {
-    const ctx = new HttpContextFactory().create()
-    ctx.request.method = () => 'GET'
-    const req = adonisRequestToWebRequest(ctx.request, 'http://localhost')
-    assert.isNull(req.body)
-  })
-})
-
-test.group('writeWebResponseToAdonisResponse', () => {
-  test('forwards status and headers', ({ assert }) => {
-    const ctx = new HttpContextFactory().create()
-    const web = new Response('hello', {
-      status: 201,
-      headers: { 'content-type': 'text/plain', 'etag': 'xyz' },
-    })
-    writeWebResponseToAdonisResponse(web, ctx.response)
-    assert.equal(ctx.response.getStatus(), 201)
-    assert.equal(ctx.response.getHeader('content-type'), 'text/plain')
-    assert.equal(ctx.response.getHeader('etag'), 'xyz')
-  })
-
-  test('null-body responses do not call stream()', ({ assert }) => {
-    const ctx = new HttpContextFactory().create()
-    let streamed = false
-    const originalStream = ctx.response.stream
-    ctx.response.stream = () => {
-      streamed = true
-      return ctx.response
-    }
-    try {
-      const web = new Response(null, { status: 204 })
-      writeWebResponseToAdonisResponse(web, ctx.response)
-      assert.isFalse(streamed)
-    } finally {
-      ctx.response.stream = originalStream
-    }
-  })
-})
-```
-
-- [ ] **Step 2: Run test to verify it fails**
-
-Run: `pnpm quick:test --files tests/utils.spec.ts`
-Expected: FAIL — module not found.
-
-- [ ] **Step 3: Implement `src/utils.ts`**
+- [ ] **Step 1: Implement `src/utils.ts`**
 
 Create `src/utils.ts`:
 
@@ -1197,12 +1263,88 @@ export function writeWebResponseToAdonisResponse(
 }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [ ] **Step 2: Write tests for the conversion utilities**
+
+Create `tests/utils.spec.ts`:
+
+```ts
+import { test } from '@japa/runner'
+import { HttpContextFactory } from '@adonisjs/core/factories/http'
+import { adonisRequestToWebRequest, writeWebResponseToAdonisResponse } from '../src/utils.js'
+
+test.group('adonisRequestToWebRequest', () => {
+  test('preserves URL and method', ({ assert }) => {
+    const ctx = new HttpContextFactory().create()
+    const req = adonisRequestToWebRequest(ctx.request, 'http://localhost')
+    assert.instanceOf(req, Request)
+    assert.equal(req.method, ctx.request.method() ?? 'GET')
+  })
+
+  test('forwards headers (string and array values)', ({ assert }) => {
+    const ctx = new HttpContextFactory().create()
+    // HttpContextFactory's default request has no real headers; we patch
+    // headers() to exercise both shapes.
+    const originalHeaders = ctx.request.headers
+    ctx.request.headers = () =>
+      ({
+        'authorization': 'Bearer token',
+        'x-multi': ['a', 'b'],
+      }) as any
+    try {
+      const req = adonisRequestToWebRequest(ctx.request, 'http://localhost')
+      assert.equal(req.headers.get('authorization'), 'Bearer token')
+      assert.equal(req.headers.get('x-multi'), 'a, b')
+    } finally {
+      ctx.request.headers = originalHeaders
+    }
+  })
+
+  test('GET / HEAD requests carry no body', ({ assert }) => {
+    const ctx = new HttpContextFactory().create()
+    ctx.request.method = () => 'GET'
+    const req = adonisRequestToWebRequest(ctx.request, 'http://localhost')
+    assert.isNull(req.body)
+  })
+})
+
+test.group('writeWebResponseToAdonisResponse', () => {
+  test('forwards status and headers', ({ assert }) => {
+    const ctx = new HttpContextFactory().create()
+    const web = new Response('hello', {
+      status: 201,
+      headers: { 'content-type': 'text/plain', 'etag': 'xyz' },
+    })
+    writeWebResponseToAdonisResponse(web, ctx.response)
+    assert.equal(ctx.response.getStatus(), 201)
+    assert.equal(ctx.response.getHeader('content-type'), 'text/plain')
+    assert.equal(ctx.response.getHeader('etag'), 'xyz')
+  })
+
+  test('null-body responses do not call stream()', ({ assert }) => {
+    const ctx = new HttpContextFactory().create()
+    let streamed = false
+    const originalStream = ctx.response.stream
+    ctx.response.stream = () => {
+      streamed = true
+      return ctx.response
+    }
+    try {
+      const web = new Response(null, { status: 204 })
+      writeWebResponseToAdonisResponse(web, ctx.response)
+      assert.isFalse(streamed)
+    } finally {
+      ctx.response.stream = originalStream
+    }
+  })
+})
+```
+
+- [ ] **Step 3: Run tests to verify they pass**
 
 Run: `pnpm quick:test --files tests/utils.spec.ts`
 Expected: PASS — 5 tests.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
 git add src/utils.ts tests/utils.spec.ts
@@ -1222,162 +1364,7 @@ Delivers `XrpcContext`, `XrpcResponse`, `XrpcStream` (all Macroable). `XrpcConte
 
 **Steps:**
 
-- [ ] **Step 1: Write the failing test**
-
-Create `tests/context.spec.ts`:
-
-```ts
-import { test } from '@japa/runner'
-import { HttpContextFactory } from '@adonisjs/core/factories/http'
-import { XrpcContext, XrpcResponse, XrpcStream } from '../src/context.js'
-import { adonisRequestToWebRequest } from '../src/utils.js'
-
-const procedureLex = { id: 'com.example.test.proc', type: 'xrpc_procedure' } as any
-const subscriptionLex = { id: 'com.example.test.sub', type: 'xrpc_subscription' } as any
-
-function makeContext(overrides: Partial<ConstructorParameters<typeof XrpcContext>[0]> = {}) {
-  const httpCtx = new HttpContextFactory().create()
-  const lexicon = (overrides.lexicon as any) ?? procedureLex
-  return new XrpcContext({
-    httpCtx,
-    lexicon,
-    // Single source of truth for "the incoming request" — derive the Fetch
-    // Request from the same Adonis HttpRequest the factory already populated.
-    request: adonisRequestToWebRequest(httpCtx.request, 'http://localhost'),
-    input: undefined,
-    params: {},
-    signal: new AbortController().signal,
-    ...overrides,
-  })
-}
-
-test.group('XrpcContext — construction', () => {
-  test('mirrors logger / containerResolver / requestId from httpCtx', ({ assert }) => {
-    const ctx = makeContext()
-    assert.equal(ctx.logger, ctx.httpContext.logger)
-    assert.equal(ctx.containerResolver, ctx.httpContext.containerResolver)
-    assert.isString(ctx.requestId)
-    // XrpcContext.requestId is sourced from httpCtx.request.id(). That method
-    // memoizes its result (Adonis caches the generated id into the request
-    // headers on first call), so the two are guaranteed to agree after
-    // construction.
-    assert.equal(ctx.requestId, ctx.httpContext.request.id())
-  })
-
-  test('procedure-kind context exposes response as XrpcResponse', ({ assert }) => {
-    const ctx = makeContext()
-    assert.instanceOf(ctx.response, XrpcResponse)
-  })
-
-  test('subscription-kind context exposes response as XrpcStream', ({ assert }) => {
-    const ctx = makeContext({ lexicon: subscriptionLex })
-    assert.instanceOf(ctx.response, XrpcStream)
-  })
-})
-
-test.group('XrpcContext.getOrFail — ALS', () => {
-  test('throws outside any als.run scope', ({ assert }) => {
-    assert.throws(() => XrpcContext.getOrFail(), /XrpcContext is not available/)
-  })
-
-  test('returns the active context inside an als.run scope', async ({ assert }) => {
-    const ctx = makeContext()
-    await XrpcContext.als.run(ctx, async () => {
-      assert.equal(XrpcContext.getOrFail(), ctx)
-      await new Promise((r) => setImmediate(r))
-      // Async continuation inherits the store:
-      assert.equal(XrpcContext.getOrFail(), ctx)
-    })
-  })
-
-  test('nested als.run scopes shadow the outer context', async ({ assert }) => {
-    const outer = makeContext()
-    const inner = makeContext()
-    await XrpcContext.als.run(outer, async () => {
-      assert.equal(XrpcContext.getOrFail(), outer)
-      await XrpcContext.als.run(inner, async () => {
-        assert.equal(XrpcContext.getOrFail(), inner)
-      })
-      assert.equal(XrpcContext.getOrFail(), outer)
-    })
-  })
-})
-
-test.group('XrpcResponse — chainable setters', () => {
-  test('status / header delegate to httpCtx.response', ({ assert }) => {
-    const ctx = makeContext()
-    const ret = ctx.response.status(201).header('etag', 'abc')
-    assert.equal(ret, ctx.response, 'chain returns itself')
-    assert.equal(ctx.httpContext.response.getStatus(), 201)
-    assert.equal(ctx.httpContext.response.getHeader('etag'), 'abc')
-  })
-
-  test('body() buffers locally (does not commit to Adonis response)', ({ assert }) => {
-    const ctx = makeContext()
-    ctx.response.body({ id: 'x' } as any)
-    // .state exposes the buffered body for the dispatch executor to read.
-    assert.deepEqual(ctx.response.state.body, { id: 'x' })
-    assert.isTrue(ctx.response.state.hasExplicitBody)
-    // Body is NOT committed to httpCtx.response — atcute's serializer / framing
-    // layer (Plan 03) reads the buffered value and constructs the wire Response.
-    assert.isUndefined(ctx.httpContext.response.getBody())
-  })
-
-  test('state snapshots status + headers from the underlying HttpResponse', ({ assert }) => {
-    const ctx = makeContext()
-    ctx.response.status(201).header('etag', 'abc')
-    const snapshot = ctx.response.state
-    assert.equal(snapshot.status, 201)
-    assert.equal(snapshot.headers.etag, 'abc')
-    assert.isFalse(snapshot.hasExplicitBody)
-  })
-
-  test('redirect() sets status + location on httpCtx.response', ({ assert }) => {
-    const ctx = makeContext()
-    ctx.response.redirect('https://cdn.example/blob.bin', 302)
-    assert.equal(ctx.httpContext.response.getStatus(), 302)
-    assert.equal(ctx.httpContext.response.getHeader('location'), 'https://cdn.example/blob.bin')
-  })
-})
-
-test.group('XrpcStream — subscription helpers', () => {
-  test('signal / aborted mirror the AbortController', ({ assert }) => {
-    const ac = new AbortController()
-    const ctx = makeContext({ lexicon: subscriptionLex, signal: ac.signal })
-    const { response: stream } = ctx
-    assert.instanceOf(stream, XrpcStream)
-    assert.equal(stream.signal, ac.signal)
-    assert.isFalse(stream.aborted)
-    ac.abort()
-    assert.isTrue(stream.aborted)
-  })
-
-  test('message() returns a payload with the $type discriminator derived from NSID + ref', ({
-    assert,
-  }) => {
-    const ctx = makeContext({ lexicon: subscriptionLex })
-    const { response: stream } = ctx
-    assert.instanceOf(stream, XrpcStream)
-    const msg = stream.message('#labels' as any, { seq: 1 } as any)
-    assert.deepEqual(msg, { $type: 'com.example.test.sub#labels', seq: 1 })
-  })
-})
-
-test.group('Macroable extension points', () => {
-  test('XrpcContext / XrpcResponse / XrpcStream expose static .macro', ({ assert }) => {
-    assert.isFunction((XrpcContext as any).macro)
-    assert.isFunction((XrpcResponse as any).macro)
-    assert.isFunction((XrpcStream as any).macro)
-  })
-})
-```
-
-- [ ] **Step 2: Run test to verify it fails**
-
-Run: `pnpm quick:test --files tests/context.spec.ts`
-Expected: FAIL — module not found.
-
-- [ ] **Step 3: Implement `src/context.ts`**
+- [ ] **Step 1: Implement `src/context.ts`**
 
 Create `src/context.ts`:
 
@@ -1596,12 +1583,162 @@ export class XrpcContext<L extends XrpcLexicon> extends Macroable {
 }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [ ] **Step 2: Write tests for context types**
+
+Create `tests/context.spec.ts`:
+
+```ts
+import { test } from '@japa/runner'
+import { HttpContextFactory } from '@adonisjs/core/factories/http'
+import { XrpcContext, XrpcResponse, XrpcStream } from '../src/context.js'
+import { adonisRequestToWebRequest } from '../src/utils.js'
+
+const procedureLex = { id: 'com.example.test.proc', type: 'xrpc_procedure' } as any
+const subscriptionLex = { id: 'com.example.test.sub', type: 'xrpc_subscription' } as any
+
+function makeContext(overrides: Partial<ConstructorParameters<typeof XrpcContext>[0]> = {}) {
+  const httpCtx = new HttpContextFactory().create()
+  const lexicon = (overrides.lexicon as any) ?? procedureLex
+  return new XrpcContext({
+    httpCtx,
+    lexicon,
+    // Single source of truth for "the incoming request" — derive the Fetch
+    // Request from the same Adonis HttpRequest the factory already populated.
+    request: adonisRequestToWebRequest(httpCtx.request, 'http://localhost'),
+    input: undefined,
+    params: {},
+    signal: new AbortController().signal,
+    ...overrides,
+  })
+}
+
+test.group('XrpcContext — construction', () => {
+  test('mirrors logger / containerResolver / requestId from httpCtx', ({ assert }) => {
+    const ctx = makeContext()
+    assert.equal(ctx.logger, ctx.httpContext.logger)
+    assert.equal(ctx.containerResolver, ctx.httpContext.containerResolver)
+    assert.isString(ctx.requestId)
+    // XrpcContext.requestId is sourced from httpCtx.request.id(). That method
+    // memoizes its result (Adonis caches the generated id into the request
+    // headers on first call), so the two are guaranteed to agree after
+    // construction.
+    assert.equal(ctx.requestId, ctx.httpContext.request.id())
+  })
+
+  test('procedure-kind context exposes response as XrpcResponse', ({ assert }) => {
+    const ctx = makeContext()
+    assert.instanceOf(ctx.response, XrpcResponse)
+  })
+
+  test('subscription-kind context exposes response as XrpcStream', ({ assert }) => {
+    const ctx = makeContext({ lexicon: subscriptionLex })
+    assert.instanceOf(ctx.response, XrpcStream)
+  })
+})
+
+test.group('XrpcContext.getOrFail — ALS', () => {
+  test('throws outside any als.run scope', ({ assert }) => {
+    assert.throws(() => XrpcContext.getOrFail(), /XrpcContext is not available/)
+  })
+
+  test('returns the active context inside an als.run scope', async ({ assert }) => {
+    const ctx = makeContext()
+    await XrpcContext.als.run(ctx, async () => {
+      assert.equal(XrpcContext.getOrFail(), ctx)
+      await new Promise((r) => setImmediate(r))
+      // Async continuation inherits the store:
+      assert.equal(XrpcContext.getOrFail(), ctx)
+    })
+  })
+
+  test('nested als.run scopes shadow the outer context', async ({ assert }) => {
+    const outer = makeContext()
+    const inner = makeContext()
+    await XrpcContext.als.run(outer, async () => {
+      assert.equal(XrpcContext.getOrFail(), outer)
+      await XrpcContext.als.run(inner, async () => {
+        assert.equal(XrpcContext.getOrFail(), inner)
+      })
+      assert.equal(XrpcContext.getOrFail(), outer)
+    })
+  })
+})
+
+test.group('XrpcResponse — chainable setters', () => {
+  test('status / header delegate to httpCtx.response', ({ assert }) => {
+    const ctx = makeContext()
+    const ret = ctx.response.status(201).header('etag', 'abc')
+    assert.equal(ret, ctx.response, 'chain returns itself')
+    assert.equal(ctx.httpContext.response.getStatus(), 201)
+    assert.equal(ctx.httpContext.response.getHeader('etag'), 'abc')
+  })
+
+  test('body() buffers locally (does not commit to Adonis response)', ({ assert }) => {
+    const ctx = makeContext()
+    ctx.response.body({ id: 'x' } as any)
+    // .state exposes the buffered body for the dispatch executor to read.
+    assert.deepEqual(ctx.response.state.body, { id: 'x' })
+    assert.isTrue(ctx.response.state.hasExplicitBody)
+    // Body is NOT committed to httpCtx.response — atcute's serializer / framing
+    // layer (Plan 03) reads the buffered value and constructs the wire Response.
+    assert.isUndefined(ctx.httpContext.response.getBody())
+  })
+
+  test('state snapshots status + headers from the underlying HttpResponse', ({ assert }) => {
+    const ctx = makeContext()
+    ctx.response.status(201).header('etag', 'abc')
+    const snapshot = ctx.response.state
+    assert.equal(snapshot.status, 201)
+    assert.equal(snapshot.headers.etag, 'abc')
+    assert.isFalse(snapshot.hasExplicitBody)
+  })
+
+  test('redirect() sets status + location on httpCtx.response', ({ assert }) => {
+    const ctx = makeContext()
+    ctx.response.redirect('https://cdn.example/blob.bin', 302)
+    assert.equal(ctx.httpContext.response.getStatus(), 302)
+    assert.equal(ctx.httpContext.response.getHeader('location'), 'https://cdn.example/blob.bin')
+  })
+})
+
+test.group('XrpcStream — subscription helpers', () => {
+  test('signal / aborted mirror the AbortController', ({ assert }) => {
+    const ac = new AbortController()
+    const ctx = makeContext({ lexicon: subscriptionLex, signal: ac.signal })
+    const { response: stream } = ctx
+    assert.instanceOf(stream, XrpcStream)
+    assert.equal(stream.signal, ac.signal)
+    assert.isFalse(stream.aborted)
+    ac.abort()
+    assert.isTrue(stream.aborted)
+  })
+
+  test('message() returns a payload with the $type discriminator derived from NSID + ref', ({
+    assert,
+  }) => {
+    const ctx = makeContext({ lexicon: subscriptionLex })
+    const { response: stream } = ctx
+    assert.instanceOf(stream, XrpcStream)
+    const msg = stream.message('#labels' as any, { seq: 1 } as any)
+    assert.deepEqual(msg, { $type: 'com.example.test.sub#labels', seq: 1 })
+  })
+})
+
+test.group('Macroable extension points', () => {
+  test('XrpcContext / XrpcResponse / XrpcStream expose static .macro', ({ assert }) => {
+    assert.isFunction((XrpcContext as any).macro)
+    assert.isFunction((XrpcResponse as any).macro)
+    assert.isFunction((XrpcStream as any).macro)
+  })
+})
+```
+
+- [ ] **Step 3: Run tests to verify they pass**
 
 Run: `pnpm quick:test --files tests/context.spec.ts`
 Expected: PASS — all groups.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
 git add src/context.ts tests/context.spec.ts
@@ -1619,62 +1756,7 @@ git commit -m "feat(xrpc): add XrpcContext / XrpcResponse / XrpcStream (Macroabl
 
 **Steps:**
 
-- [ ] **Step 1: Write the failing test**
-
-Create `tests/factory.spec.ts`:
-
-```ts
-import { test } from '@japa/runner'
-import { XrpcContextFactory } from '../factories/xrpc.js'
-import { XrpcContext, XrpcResponse, XrpcStream } from '../src/context.js'
-
-const procedureLex = { id: 'com.example.test.proc', type: 'xrpc_procedure' } as any
-const subscriptionLex = { id: 'com.example.test.sub', type: 'xrpc_subscription' } as any
-
-test.group('XrpcContextFactory', () => {
-  test('throws if lexicon is not supplied', ({ assert }) => {
-    assert.throws(() => new XrpcContextFactory().create(), /lexicon is required/)
-  })
-
-  test('creates an XrpcContext with defaults for procedure-kind lexicons', ({ assert }) => {
-    const ctx = new XrpcContextFactory().merge({ lexicon: procedureLex }).create()
-    assert.instanceOf(ctx, XrpcContext)
-    assert.instanceOf(ctx.response, XrpcResponse)
-    assert.deepEqual(ctx.params, {})
-    assert.equal(ctx.input, undefined)
-  })
-
-  test('creates an XrpcContext with defaults for subscription-kind lexicons', ({ assert }) => {
-    const ctx = new XrpcContextFactory().merge({ lexicon: subscriptionLex }).create()
-    assert.instanceOf(ctx.response, XrpcStream)
-  })
-
-  test('forwards merged input / params overrides', ({ assert }) => {
-    const ctx = new XrpcContextFactory()
-      .merge({
-        lexicon: procedureLex,
-        input: { reasonType: 'spam' },
-        params: { limit: 50 },
-      })
-      .create()
-    assert.deepEqual(ctx.input, { reasonType: 'spam' })
-    assert.deepEqual(ctx.params, { limit: 50 })
-  })
-
-  test('uses a fresh HttpContextFactory by default', ({ assert }) => {
-    const ctx = new XrpcContextFactory().merge({ lexicon: procedureLex }).create()
-    assert.isObject(ctx.httpContext)
-    assert.isFunction(ctx.httpContext.logger.info)
-  })
-})
-```
-
-- [ ] **Step 2: Run test to verify it fails**
-
-Run: `pnpm quick:test --files tests/factory.spec.ts`
-Expected: FAIL — module not found.
-
-- [ ] **Step 3: Implement `factories/xrpc.ts`**
+- [ ] **Step 1: Implement `factories/xrpc.ts`**
 
 Create `factories/xrpc.ts`:
 
@@ -1733,12 +1815,62 @@ export class XrpcContextFactory {
 }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [ ] **Step 2: Write tests for the factory**
+
+Create `tests/factory.spec.ts`:
+
+```ts
+import { test } from '@japa/runner'
+import { XrpcContextFactory } from '../factories/xrpc.js'
+import { XrpcContext, XrpcResponse, XrpcStream } from '../src/context.js'
+
+const procedureLex = { id: 'com.example.test.proc', type: 'xrpc_procedure' } as any
+const subscriptionLex = { id: 'com.example.test.sub', type: 'xrpc_subscription' } as any
+
+test.group('XrpcContextFactory', () => {
+  test('throws if lexicon is not supplied', ({ assert }) => {
+    assert.throws(() => new XrpcContextFactory().create(), /lexicon is required/)
+  })
+
+  test('creates an XrpcContext with defaults for procedure-kind lexicons', ({ assert }) => {
+    const ctx = new XrpcContextFactory().merge({ lexicon: procedureLex }).create()
+    assert.instanceOf(ctx, XrpcContext)
+    assert.instanceOf(ctx.response, XrpcResponse)
+    assert.deepEqual(ctx.params, {})
+    assert.equal(ctx.input, undefined)
+  })
+
+  test('creates an XrpcContext with defaults for subscription-kind lexicons', ({ assert }) => {
+    const ctx = new XrpcContextFactory().merge({ lexicon: subscriptionLex }).create()
+    assert.instanceOf(ctx.response, XrpcStream)
+  })
+
+  test('forwards merged input / params overrides', ({ assert }) => {
+    const ctx = new XrpcContextFactory()
+      .merge({
+        lexicon: procedureLex,
+        input: { reasonType: 'spam' },
+        params: { limit: 50 },
+      })
+      .create()
+    assert.deepEqual(ctx.input, { reasonType: 'spam' })
+    assert.deepEqual(ctx.params, { limit: 50 })
+  })
+
+  test('uses a fresh HttpContextFactory by default', ({ assert }) => {
+    const ctx = new XrpcContextFactory().merge({ lexicon: procedureLex }).create()
+    assert.isObject(ctx.httpContext)
+    assert.isFunction(ctx.httpContext.logger.info)
+  })
+})
+```
+
+- [ ] **Step 3: Run tests to verify they pass**
 
 Run: `pnpm quick:test --files tests/factory.spec.ts`
 Expected: PASS — 5 tests.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
 git add factories/xrpc.ts tests/factory.spec.ts
@@ -1909,7 +2041,7 @@ Run through this checklist before handing off:
   - Ace commands — out of scope, Plan 06 ✓
   - `indexXrpc()` codegen — out of scope, Plan 07 ✓
 
-- [ ] **Type consistency:** `RouteInfo['handler']` shape in `src/router.ts` matches the signature accepted by `procedure / query / subscription`. `XrpcContext.response` is conditionally typed against `L extends XrpcSubscriptionLexicon`. The factory returns `XrpcContext<L>` with the same generic parameter the caller supplies.
+- [ ] **Type consistency:** `procedure / query / subscription` accept `XrpcHandlerInput` (the user-facing union); `RouteInfo['handler']` is `NormalizedHandler` (the post-`#normalizeHandler` discriminated shape Plan 03's executor consumes). `XrpcContext.response` is conditionally typed against `L extends XrpcSubscriptionLexicon`. The factory returns `XrpcContext<L>` with the same generic parameter the caller supplies.
 
 - [ ] **Forward-compat hooks for later plans:** The plan deliberately leaves these extension points in place:
   - `XrpcRoute` and `XrpcRouteGroup` extend `Macroable` so Plan 05 can attach `.serviceAuth(...)` via `.macro()`.

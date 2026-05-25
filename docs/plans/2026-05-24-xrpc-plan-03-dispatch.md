@@ -2,13 +2,15 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Ship the dispatch layer — the shared executor that drives every registered XRPC handler, `XrpcServer` that owns the `@atcute/xrpc-server` `XRPCRouter` + WebSocket adapter, and `XrpcDispatchMiddleware` that intercepts `/xrpc/*` HTTP requests. After this plan, a hand-constructed `XrpcRouter` + `XrpcServer` pair can dispatch real HTTP procedures, HTTP queries, and WebSocket subscriptions end-to-end — without auth, without provider lifecycle, without error-reporter integration. Those land in Plans 04 (provider) and 05 (auth) by splicing into clean seams left here.
+**Goal:** Ship the dispatch layer — the shared executor that drives every registered XRPC handler, `XrpcServer` that owns the `@atcute/xrpc-server` `XRPCRouter` + WebSocket adapter, and `XrpcDispatchMiddleware` that intercepts `/xrpc/*` HTTP requests. After this plan, a hand-constructed `XrpcRouter` + `XrpcServer` pair can dispatch real HTTP procedures, HTTP queries, and WebSocket subscriptions end-to-end — without provider lifecycle and without error-reporter integration. Plan 04 (provider) layers those on top by splicing into the single error-reporting seam left here.
 
-**Architecture:** The atcute `XRPCRouter` and the `createNodeWebSocket()` helper share one executor function (registered once per route) — this is the closure-deduplication pattern locked in by the spec. The executor takes `(atcuteCtx, requestCtx: RequestContext)` — the second arg is materialized at the dispatch boundary on both paths, not read from any ALS inside the executor. `RequestContext` carries `{ requestId, request: HttpRequest, logger, containerResolver }` — the Adonis `HttpRequest` is the public-facing request surface (`ctx.request.validateUsing(...)` etc.), atcute's Fetch `Request` is an executor-internal detail. The executor is auth-agnostic and error-reporter-agnostic (Plan 04 widens it for error reporting via `XrpcService`; Plan 05 widens it for auth via `XrpcAuth`). The HTTP-side path runs as Adonis server-level middleware in `start/kernel.ts`'s `server.use([...])` chain — the middleware enters the package-internal `requestContextStore` with a `RequestContext` derived from the triggering `HttpContext` (via `fromHttpContext(ctx)`) and short-circuits on path match. The WebSocket-side path snips atcute's `'upgrade'` listener after `injectWebSocket` registers it and replaces it with a URL-filtering wrapper that builds a `RequestContext` directly from the upgrade `IncomingMessage` + `app` (the `HttpRequest` is constructed via `appServer.createRequest(req, synthRes)` — no synthetic `HttpContext`), enters `requestContextStore`, and falls through to other listeners (Vite HMR, app-defined WS endpoints) for non-XRPC URLs.
+**Architecture:** The atcute `XRPCRouter` and the `createNodeWebSocket()` helper share one executor function (registered once per route) — this is the closure-deduplication pattern locked in by the spec. The executor takes `(atcuteCtx, requestCtx: RequestContext)` — the second arg is materialized at the dispatch boundary on both paths, not read from any ALS inside the executor. `RequestContext` carries `{ requestId, request: HttpRequest, logger, containerResolver }` — the Adonis `HttpRequest` is the public-facing request surface (`ctx.request.validateUsing(...)` etc.), atcute's Fetch `Request` is an executor-internal detail. The executor is error-reporter-agnostic (Plan 04 widens it for error reporting via `XrpcService`). The HTTP-side path runs as Adonis server-level middleware in `start/kernel.ts`'s `server.use([...])` chain — the middleware enters the package-internal `requestContextStore` with a `RequestContext` derived from the triggering `HttpContext` (via `fromHttpContext(ctx)`) and short-circuits on path match. The WebSocket-side path snips atcute's `'upgrade'` listener after `injectWebSocket` registers it and replaces it with a URL-filtering wrapper that builds a `RequestContext` directly from the upgrade `IncomingMessage` + `app` (the `HttpRequest` is constructed via `appServer.createRequest(req, synthRes)` — no synthetic `HttpContext`), enters `requestContextStore`, and falls through to other listeners (Vite HMR, app-defined WS endpoints) for non-XRPC URLs.
 
 **Tech Stack:** TypeScript (ESM), Node ≥24, `@atcute/xrpc-server` (new dep), `@atcute/xrpc-server-node` (new dep), `@adonisjs/core` (peer; for `HttpContext`, `Logger`, `ApplicationService`, `Server`), `@japa/runner` + `@japa/assert` for tests, real HTTP servers + a WebSocket client for functional tests.
 
 **Spec reference:** `docs/specs/2026-05-21-adonisjs-atproto-xrpc-design.md` §§ _XrpcServer — internal dispatch orchestrator_, _Dispatch: HTTP middleware (procedure + query)_, _Dispatch: WebSocket upgrade (subscription)_, _Subscription dispatch — executor branches_, _Lifecycle phases_.
+
+**Implementation scope:** The plan series (01–04) lands the XRPC package up to — but not including — auth. The design spec covers auth in full because the overall system had to be designed knowing where the seams sit and how `XrpcContext` would be shaped, but a plan-executing implementor doesn't need to think about auth at all: there are no auth-related comment-anchors, types, or "Plan 05 will splice here" placeholders left in code. When the auth work is eventually planned, it will lay its own seams against whatever the codebase looks like at that point. References to `auth` you do encounter in this plan are limited to the existing `RouteInfo.auth` field (from Plan 01's data structure) which is carried through the executor unread — Plan 03 neither constructs an `XrpcAuth`, nor pre-triggers verification, nor surfaces an `auth` field on `XrpcContext`.
 
 **Depends on:** Plan 01 (foundation) — `src/types.ts`, `src/router.ts` (`XrpcRouter`, `RouteInfo`, `NormalizedHandler`, `XrpcHandlerInput`; **handler normalization runs at register time** via fold's `moduleCaller`/`moduleImporter`, so Plan 03's executor consumes the normalized shape directly and does no handler resolution of its own), `src/context.ts` (`XrpcContext`, `XrpcContext.als`, `XrpcResponse`, `XrpcStream`), `src/errors.ts` (`XrpcError`, `InternalServerError`, `NotFoundError`), `src/utils.ts` (`adonisRequestToWebRequest`, `writeWebResponseToAdonisResponse`). Plan 02 (serializer) — `src/serializer.ts` (`XrpcSerializer`).
 
@@ -42,9 +44,6 @@
 - **`XrpcService` facade + `errorHandler(factory)` registration** → Plan 04. The executor's catch block has an explicit seam (`// ERROR-REPORTING SEAM (Plan 04)`) where Plan 04 will splice `await xrpc.getRegisteredErrorHandler()?.report(...)` before the `throw`. Plan 03 just throws after wrapping non-`XrpcError` exceptions as `InternalServerError`.
 - **Provider lifecycle** — the **minimal** provider is in Plan 03 (Task 7b) so the functional tests can load it via `rcFileContents.providers` instead of hand-rolling XrpcServer construction in `beforeReady`. Plan 04 expands the provider with `XrpcService` facade, error-reporter registration, `HttpContext.xrpc` Macroable getter, and atcute's `handleException` / `handleSubscriptionException` wiring.
 - **`HttpContext.xrpc` getter** → Plan 04 (provider's register phase installs the Macroable getter).
-- **`XrpcAuth` + auth pre-trigger inside the executor** → Plan 05. The executor has an explicit seam (`// AUTH SEAM (Plan 05)`) before invoking the handler where Plan 05 will splice `if (route.auth.serviceAuth && !route.auth.optional) await auth.resolveOrFail()` and the `XrpcContext`'s `auth: XrpcAuth(...)` field assignment.
-- **`XrpcContext.auth` Macroable getter** → Plan 05. Plan 03's `XrpcContext` construction doesn't pass an `auth` field; the field's presence is added via `XrpcContext.macro('auth', ...)` in Plan 05.
-- **`ServiceJwtVerifier` construction** → Plan 04 (provider's `boot()` reads `defineConfig({ serviceDid, resolver })` and constructs it). Plan 03's executor signature has no verifier parameter.
 - **Ace commands** (`list:xrpc:routes`, `make:xrpc:controller`) → Plan 06.
 - **`indexXrpc()` codegen hook** → Plan 07.
 
@@ -284,8 +283,8 @@ export function fromHttpContext(httpCtx: HttpContext): RequestContext {
 |
 | 2. `createXrpcExecutor` — builds the single shared executor function
 |    that atcute invokes for every route. Closure captures the route
-|    registry and the serializer; auth (Plan 05) and error reporting
-|    (Plan 04) splice in at clearly marked seams.
+|    registry and the serializer; error reporting (Plan 04) splices in
+|    at a clearly marked seam.
 |
 | RequestContext + requestContextStore + fromHttpContext live in
 | `./request_context.js` — both XrpcServer and XrpcDispatchMiddleware
@@ -374,7 +373,6 @@ export function createXrpcExecutor(_deps: {
   operations: ReadonlyMap<string, RouteInfo>
   serializer: XrpcSerializer
   // ERROR-REPORTING SEAM (Plan 04): `xrpc: XrpcService` field added here.
-  // AUTH SEAM (Plan 05): `serviceJwtVerifier: ServiceJwtVerifier` added here.
 }): SharedXrpcExecutor {
   throw new RuntimeException('createXrpcExecutor() not yet implemented (Plan 03 Task 3)')
 }
@@ -430,12 +428,12 @@ The executor is invoked by atcute for every dispatched route. It takes `(atcuteC
 
 1. Re-derives the NSID from the URL because atcute doesn't forward it to handlers.
 2. Looks up the matching `RouteInfo` from the operations registry (Plan 01's `XrpcRouter.#normalizeHandler` already ran at register time, so `route.handler` is the pre-normalized `NormalizedHandler` shape — the executor doesn't do its own handler resolution).
-3. Constructs an `XrpcContext` from `route.lexicon`, `atcuteCtx`, and `requestCtx`'s `requestId` / `logger` / `containerResolver` (no `auth` field — Plan 05 splices it in via Macroable getter).
+3. Constructs an `XrpcContext` from `route.lexicon`, `atcuteCtx`, and `requestCtx`'s `requestId` / `logger` / `containerResolver` (no `auth` field — `XrpcContext` is auth-free in this plan).
 4. Enters `XrpcContext.als` scope so downstream code can call `XrpcContext.getOrFail()`.
 5. Branches on `route.handler.kind`: `'function'` → `fn(ctx)`; `'controller'` → `handle(ctx.containerResolver, ctx)`. For procedure/query, awaits the result, picks the body source (handler return value, unless `xrpcCtx.response.state.bodySet` flags an explicit `.json(...)` override), serializes via `serializer.serializeWithoutWrapping(rawBody, xrpcCtx.containerResolver)`, and constructs a `Response` from `xrpcCtx.response.state` — `Response.redirect(...)` for the redirect case, otherwise `Response.json(serialized, { status, headers })`. The Response construction is mandatory: atcute's router silently substitutes `new Response(null)` for any non-Response return. For subscription, branches to `wrapSubscriptionIterator(xrpcCtx, ...)` (Task 4) — atcute iterates the AsyncIterable separately, no Response object needed. After `xrpcCtx` is constructed, `requestCtx` doesn't surface — every request-scoped read sources from `xrpcCtx`, which mirrors the same fields.
 6. On error, wraps non-`XrpcError` as `InternalServerError` and re-throws — atcute's `handleException` (configured at XRPCRouter construction in Plan 04) encodes the wire-format response.
 
-The error-reporting seam is a comment line: Plan 04 adds `await xrpc.getRegisteredErrorHandler()?.report(err, xrpcCtx)` before the `throw`. The auth pre-trigger seam is also a comment line: Plan 05 adds `if (route.auth.serviceAuth && !route.auth.optional) await auth.resolveOrFail()` after context construction.
+The error-reporting seam is a comment line: Plan 04 adds `await xrpc.getRegisteredErrorHandler()?.report(err, xrpcCtx)` before the `throw`.
 
 **Steps:**
 
@@ -450,7 +448,6 @@ export function createXrpcExecutor(deps: {
   operations: ReadonlyMap<string, RouteInfo>
   serializer: XrpcSerializer
   // ERROR-REPORTING SEAM (Plan 04): `xrpc: XrpcService` field added here.
-  // AUTH SEAM (Plan 05): `serviceJwtVerifier: ServiceJwtVerifier` added here.
 }): SharedXrpcExecutor {
   const { operations, serializer } = deps
 
@@ -487,13 +484,6 @@ export function createXrpcExecutor(deps: {
       // registry desync or a crafted URL that snuck past atcute's matcher.
       throw new NotFoundError(`No XRPC method registered for NSID '${nsid}'`)
     }
-
-    // AUTH SEAM (Plan 05): construct an `XrpcAuth` here and assign it to
-    // `xrpcCtx.auth`. For required-auth routes
-    // (`route.auth.serviceAuth && !route.auth.optional`), pre-trigger
-    // `await auth.resolveOrFail()` for fail-fast semantics. Plan 03's
-    // executor does neither — `XrpcContext` is constructed without `auth`,
-    // and the per-route `auth` flag is unused at dispatch time.
 
     const xrpcCtx = new XrpcContext({
       requestId: requestCtx.requestId,
@@ -1471,12 +1461,6 @@ In `src/xrpc_server.ts`, add after `#installRoutes`:
       return
     }
 
-    // AUTH SEAM (Plan 05): pre-flight service-JWT verification fires here,
-    // between RequestContext construction and delegating to atcute. The
-    // `Authorization` header is on `req.headers`; the route's auth
-    // declaration is on `route.auth` (looked up via the NSID slice). Reject
-    // the upgrade by destroying the socket if verification fails.
-
     // Build a narrow RequestContext directly — no synthetic HttpContext.
     // appServer.createRequest uses the live app config (encryption, qsParser,
     // HTTP config) so HttpRequest.id() respects the consumer's
@@ -1598,15 +1582,6 @@ export default class XrpcDispatchMiddleware {
         { cause: err as Error }
       )
     }
-
-    // AUTH SEAM (Plan 05): pre-flight service-JWT verification fires here,
-    // between resolving the XrpcServer and handing the request to atcute.
-    // Parse the NSID from the URL, look up `route.auth` in the registry
-    // (via `xrpcServer.router` -> walk routes, OR via a dedicated registry
-    // accessor on XrpcServer if we add one), and run `XrpcAuth.resolveOrFail()`
-    // if the route declares required auth. Throw `AuthRequiredError` on
-    // failure — atcute's `handleException` (configured at XRPCRouter
-    // construction) encodes it as the wire response.
 
     const webRequest = adonisRequestToWebRequest(ctx.request)
     const webResponse = await requestContextStore.run(fromHttpContext(ctx), () =>
@@ -2347,7 +2322,7 @@ export type { DecodedFrame }
 export interface InjectXrpcSubscriptionOptions {
   /** URL search params (e.g. `cursor` for subscriptions that support resumption). */
   params?: Record<string, string | number | string[]>
-  /** Additional request headers (e.g. Plan 05 service-JWT Bearer). */
+  /** Additional request headers. */
   headers?: Record<string, string>
 }
 
@@ -2766,7 +2741,7 @@ Walk the prompt:
 
 - Selected package: `@thisismissem/adonisjs-atproto-xrpc`
 - Bump type: **minor** (v0.x, new public surface — `./middleware`, `./test_utils`, and `./event-stream/framing` subpaths + new deps; XrpcServer / executor stay internal in this plan but the middleware is consumer-mounted in `kernel.ts`)
-- Summary: `Ship the XRPC dispatch layer: XrpcServer wraps @atcute/xrpc-server's XRPCRouter + WebSocket adapter, the shared executor function handles every registered route (procedure, query, subscription) with closure-deduplication, and XrpcDispatchMiddleware intercepts /xrpc/* paths from start/kernel.ts. Also ships a public event-stream framing module (decodeFrame / encodeFrame / DecodedFrame discriminated union) filling a gap atcute leaves open. Auth (Plan 05) and provider lifecycle expansion (Plan 04) splice into explicit seams left in the executor and dispatch middleware.`
+- Summary: `Ship the XRPC dispatch layer: XrpcServer wraps @atcute/xrpc-server's XRPCRouter + WebSocket adapter, the shared executor function handles every registered route (procedure, query, subscription) with closure-deduplication, and XrpcDispatchMiddleware intercepts /xrpc/* paths from start/kernel.ts. Also ships a public event-stream framing module (decodeFrame / encodeFrame / DecodedFrame discriminated union) filling a gap atcute leaves open. Provider lifecycle expansion (Plan 04) splices into the explicit error-reporting seam left in the executor.`
 
 - [ ] **Step 2: Commit the changeset**
 
@@ -2796,15 +2771,13 @@ Run through this checklist before handing off:
   - Functional HTTP test (procedure + query) — Task 8 ✓
   - Functional WS test (subscription) — Task 10 ✓
   - `XrpcService` facade + error handler registration — out of scope, Plan 04 ✓
-  - `XrpcAuth` + auth pre-trigger — out of scope, Plan 05 ✓
   - `HttpContext.xrpc` Macroable getter — out of scope, Plan 04 ✓
 
-- [ ] **Type consistency:** `SharedXrpcExecutor` signature is `(atcuteCtx, requestCtx?: RequestContext) => Promise<Response> | AsyncIterable<unknown>` — return covers both `Promise<Response>` (HTTP path — the executor constructs a `Response` from `xrpcCtx.response.state` + the serialized body; atcute's router checks `output instanceof Response` and silently drops non-Response returns) and `AsyncIterable<unknown>` (subscription path — atcute iterates for frame encoding). `RouteInfo` from Plan 01 carries the `auth: RouteAuthDecl` field (Plan 05 reads it) and is consumed by the executor without being modified here. `XrpcContext` construction sources `requestId` / `request: HttpRequest` (Adonis) / `logger` / `containerResolver` from `requestCtx`, and `lexicon` / `input` / `params` / `signal` from `route` + `atcuteCtx` — with no `auth` (deferred to Plan 05's Macroable getter). After `xrpcCtx` is constructed, every subsequent read in the executor (and in `wrapSubscriptionIterator`) sources from `xrpcCtx`, not `requestCtx`.
+- [ ] **Type consistency:** `SharedXrpcExecutor` signature is `(atcuteCtx, requestCtx?: RequestContext) => Promise<Response> | AsyncIterable<unknown>` — return covers both `Promise<Response>` (HTTP path — the executor constructs a `Response` from `xrpcCtx.response.state` + the serialized body; atcute's router checks `output instanceof Response` and silently drops non-Response returns) and `AsyncIterable<unknown>` (subscription path — atcute iterates for frame encoding). `RouteInfo` from Plan 01 carries the `auth: RouteAuthDecl` field as routing state — Plan 03's executor reads `RouteInfo` but neither consults nor modifies the `auth` field. `XrpcContext` construction sources `requestId` / `request: HttpRequest` (Adonis) / `logger` / `containerResolver` from `requestCtx`, and `lexicon` / `input` / `params` / `signal` from `route` + `atcuteCtx` — with no `auth` field on the context. After `xrpcCtx` is constructed, every subsequent read in the executor (and in `wrapSubscriptionIterator`) sources from `xrpcCtx`, not `requestCtx`.
 
-- [ ] **Forward-compat seams for later plans:** Three explicit seams are documented in the code with comment-anchors:
-  - `AUTH SEAM (Plan 05)` in `createXrpcExecutor` (between context construction and handler invocation), in `XrpcDispatchMiddleware.handle` (between server resolution and atcute handoff), and in `XrpcServer.#installWebSocketHandler` (between path match and RequestContext construction).
+- [ ] **Forward-compat seams for Plan 04:** Two explicit seams are documented in the code with comment-anchors:
   - `ERROR-REPORTING SEAM (Plan 04)` in `createXrpcExecutor`'s catch block and in `wrapSubscriptionIterator`'s catch block.
-  - Comment in `createXrpcExecutor`'s `deps` shape lists the future Plan 04 / Plan 05 fields explicitly so reviewers can see what's coming.
+  - Comment in `createXrpcExecutor`'s `deps` shape lists the future `xrpc: XrpcService` field explicitly so reviewers can see what's coming.
 
 - [ ] **No placeholder text:** Grep for `TODO`, `FIXME`, `TBD` in the plan. The only intentionally-kept `TODO` is the upstream-PR note in Task 6 about adding a `urlPredicate` option to `@atcute/xrpc-server-node`'s `createNodeWebSocket` (would eliminate the snip-and-wrap dance); that's a deliberate follow-up marker, not unfinished plan content.
 

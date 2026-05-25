@@ -4,6 +4,7 @@
   "language": "en",
   "caseSensitive": false,
   "words": [
+    "acks",
     "adonisrc",
     "affordances",
     "agentic",
@@ -17,6 +18,8 @@
     "codemod",
     "dedup",
     "desync",
+    "ECONNRESET",
+    "empts",
     "fedify",
     "fedimod",
     "healthz",
@@ -37,7 +40,9 @@
     "subarray",
     "subpaths",
     "thisismissem",
+    "typechecks",
     "Tuyau",
+    "unref",
     "xrpc",
     "yalc"
   ]

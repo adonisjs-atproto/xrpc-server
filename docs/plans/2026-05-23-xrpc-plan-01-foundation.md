@@ -19,12 +19,15 @@
 - `src/errors.ts` — `XrpcError` base + 8 built-in subclasses
 - `src/router.ts` — `XrpcRouter`, `XrpcRoute`, `XrpcRouteGroup` (Macroable; no auth)
 - `src/utils.ts` — `adonisRequestToWebRequest` + `writeWebResponseToAdonisResponse`
-- `src/context.ts` — `XrpcContext`, `XrpcResponse`, `XrpcStream` (Macroable; ALS-based static accessor)
+- `src/context.ts` — `XrpcContext`, `XrpcResponse`, `XrpcStream` (Macroable; ALS-based static accessors)
+- `src/exception_handler.ts` — `ExceptionHandler` base class (the consumer's `app/exceptions/xrpc_handler.ts` extends this); ships defaults for `shouldReport()`, `report()` (no-op), `handle()` (sanitize to `InternalServerError` in production, preserve cause in dev)
 - `factories/xrpc.ts` — `XrpcContextFactory`
+- `stubs/app/exceptions/xrpc_handler.stub` — consumer-facing stub that the configure command publishes to `app/exceptions/xrpc_handler.ts`; subclass of `ExceptionHandler` with thin `super`-delegating bodies for `report()` and `handle()` (the Adonis stub convention)
 - `tests/errors.spec.ts`
 - `tests/router.spec.ts`
 - `tests/utils.spec.ts`
 - `tests/context.spec.ts`
+- `tests/exception_handler.spec.ts`
 - `tests/factory.spec.ts`
 
 ### Modify
@@ -40,7 +43,7 @@
 
 - `src/serializer.ts` (XrpcSerializer) → Plan 02
 - `src/xrpc_server.ts`, `src/middleware/dispatch.ts`, WebSocket upgrade → Plan 03
-- `providers/provider.ts` refactor, `services/xrpc.ts`, `services/router.ts`, `HttpContext.xrpc` getter → Plan 04
+- `providers/provider.ts` refactor, `services/xrpc.ts`, `services/router.ts` → Plan 04
 - `src/auth.ts`, `.serviceAuth()`, `ctx.auth`, `XrpcAuthResult`, `isService` → Plan 05
 - `commands/list_xrpc_routes.ts`, `commands/make_xrpc_controller.ts` → Plan 06
 - `hooks/index_xrpc.ts` → Plan 07
@@ -545,15 +548,16 @@ git commit -m "feat(xrpc): defineConfig validates serviceDid via @atcute/lexicon
 
 ---
 
-## Task 5: Refine `configure.ts` to verify `useAsyncLocalStorage`
+## Task 5: Refine `configure.ts` to publish the handler stub + verify `useAsyncLocalStorage`
 
 **Files:**
 
 - Modify: `configure.ts`
 - Modify: `stubs/config.stub`
+- Create: `stubs/app/exceptions/xrpc_handler.stub`
 - Modify: `tests/configure.spec.ts` (extend existing test group)
 
-The configure hook already publishes the config stub and registers the provider. This task adds the `useAsyncLocalStorage` verification step required by the spec's Prerequisites section.
+The configure hook already publishes the config stub and registers the provider. This task (a) adds the publish step for the new `xrpc_handler.stub` so consumers get a ready-to-edit `app/exceptions/xrpc_handler.ts` at install time, and (b) adds the `useAsyncLocalStorage` verification step required by the spec's Prerequisites section.
 
 **Steps:**
 
@@ -572,6 +576,41 @@ export default defineConfig({
   serviceDid: env.get('ATPROTO_SERVICE_DID'),
 })
 ```
+
+- [ ] **Step 1b: Create `stubs/app/exceptions/xrpc_handler.stub`**
+
+```
+{{{
+  exports({ to: app.makePath('app/exceptions/xrpc_handler.ts') })
+}}}
+import { ExceptionHandler } from '@thisismissem/adonisjs-atproto-xrpc'
+import type { XrpcContext, XrpcLexicon, XrpcError } from '@thisismissem/adonisjs-atproto-xrpc'
+
+/**
+ * XRPC exception handler. The base class ships sensible defaults:
+ *
+ *   - `report()`     — no-op (no observability integration assumed). Add
+ *                      your Sentry / structured logging call here.
+ *   - `handle()`     — sanitizes unexpected errors to `InternalServerError`
+ *                      in production so internal messages / stack traces
+ *                      don't leak to clients; preserves the cause in dev.
+ *   - `shouldReport()` — returns true for every error; override to suppress.
+ *
+ * Both `report` and `handle` here just delegate to `super` — modify their
+ * bodies to add custom behavior.
+ */
+export default class XrpcExceptionHandler extends ExceptionHandler {
+  async report(error: unknown, ctx: XrpcContext<XrpcLexicon> | null) {
+    return super.report(error, ctx)
+  }
+
+  async handle(error: unknown, ctx: XrpcContext<XrpcLexicon> | null): Promise<XrpcError> {
+    return super.handle(error, ctx)
+  }
+}
+```
+
+The thin-delegation shape matches Adonis's `app/exceptions/handler.ts` convention — the stub is an extension point, not pre-filled custom logic.
 
 - [ ] **Step 2: Update `configure.ts`**
 
@@ -594,6 +633,7 @@ export async function configure(command: Configure) {
   const codemods = await command.createCodemods()
 
   await codemods.makeUsingStub(stubsRoot, 'config.stub', {})
+  await codemods.makeUsingStub(stubsRoot, 'app/exceptions/xrpc_handler.stub', {})
 
   await codemods.updateRcFile((rcFile) => {
     rcFile.addProvider(`${packageName}/provider`)
@@ -608,6 +648,11 @@ export async function configure(command: Configure) {
   const instructions = command.ui.instructions()
   instructions.heading('AT Protocol XRPC setup!')
   instructions.add("Set the ATPROTO_SERVICE_DID env var to this service's DID before booting.")
+  instructions.add(
+    'Register the XRPC error handler in start/kernel.ts:\n' +
+      "  import xrpc from '@thisismissem/adonisjs-atproto-xrpc/services/xrpc'\n" +
+      "  xrpc.errorHandler(() => import('#exceptions/xrpc_handler'))"
+  )
   instructions.render()
 }
 
@@ -697,8 +742,8 @@ Expected: PASS — both the original test and the new flag-verification test.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add configure.ts stubs/config.stub tests/configure.spec.ts
-git commit -m "feat(xrpc): configure() verifies useAsyncLocalStorage and seeds serviceDid"
+git add configure.ts stubs/config.stub stubs/app/exceptions/xrpc_handler.stub tests/configure.spec.ts
+git commit -m "feat(xrpc): configure() publishes handler stub, verifies useAsyncLocalStorage, seeds serviceDid"
 ```
 
 ---
@@ -1360,7 +1405,7 @@ git commit -m "feat(xrpc): add Web ↔ Adonis request/response conversion utilit
 - Create: `src/context.ts`
 - Create: `tests/context.spec.ts`
 
-Delivers `XrpcContext`, `XrpcResponse`, `XrpcStream` (all Macroable). `XrpcContext.getOrFail()` reads from a package-owned `AsyncLocalStorage`. **No `.auth` field** — a future auth-spec attaches it via declaration merging + macro.
+Delivers `XrpcContext`, `XrpcResponse`, `XrpcStream` (all Macroable). `XrpcContext.get()` / `XrpcContext.getOrFail()` read from a package-owned `AsyncLocalStorage` (non-throwing and throwing variants — same shape as `HttpContext.get()` / `HttpContext.getOrFail()`). **No `.auth` field** — a future auth-spec attaches it via declaration merging + macro.
 
 The constructor takes materialized per-request primitives (`logger`, `containerResolver`, `requestId`, `request: HttpRequest`) rather than a full `HttpContext` — the package doesn't keep an Adonis `HttpContext` reference around because the WS-subscription path has no such object to expose anyway (see the design spec's "HTTP-context asymmetry" section). The dispatch boundary (Plan 03's middleware + WS upgrade listener) materializes these via `fromHttpContext(httpCtx)` or directly from the upgrade `IncomingMessage`, then threads them as a `RequestContext` into the executor, which forwards them to the `XrpcContext` constructor.
 
@@ -1502,13 +1547,12 @@ export interface XrpcContextParams<L extends XrpcLexicon> {
 /**
  * Per-request XRPC context. Constructed by the dispatch executor (Plan 03)
  * for both HTTP-triggered (procedure / query) and subscription paths. The
- * static `als` slot and `getOrFail()` accessor let downstream code reach the
- * current context without explicit threading.
+ * static `als` slot plus the `get()` / `getOrFail()` accessors let downstream
+ * code reach the current context without explicit threading.
  *
- * A future auth-spec augments this class with `auth: XrpcAuth` via
- * declaration merging and a getter macro — that's why XrpcContext is
- * Macroable. (Plan 04's `HttpContext.xrpc` macro uses the same mechanism in
- * the opposite direction.)
+ * Macroable so that future extensions (e.g. an auth field attached via
+ * declaration merging + getter macro) can graft onto the class without
+ * changing its constructor.
  *
  * Notably absent: no `httpContext` getter / no underlying HttpContext field.
  * The WS-subscription path has no Adonis HttpContext to expose, so the design
@@ -1521,10 +1565,25 @@ export class XrpcContext<L extends XrpcLexicon> extends Macroable {
   static readonly als = new AsyncLocalStorage<XrpcContext<XrpcLexicon>>()
 
   /**
-   * Returns the active XrpcContext from the package's own ALS. Use this
-   * inside XRPC handlers and any downstream code instead of
-   * `HttpContext.getOrFail()` — see the spec's "HTTP-context asymmetry"
-   * section for the rationale.
+   * Returns the active XrpcContext from the package's own ALS, or
+   * `undefined` if called outside an XRPC handler scope. Mirrors
+   * `HttpContext.get()` on the Adonis side — use when the caller can
+   * reasonably proceed without an XRPC context (e.g. a shared logging /
+   * observability helper that adds XRPC tags when available and skips them
+   * when not).
+   */
+  static get(): XrpcContext<XrpcLexicon> | undefined {
+    return XrpcContext.als.getStore()
+  }
+
+  /**
+   * Returns the active XrpcContext from the package's own ALS, or throws
+   * `RuntimeException` if called outside an XRPC handler scope. Use this
+   * inside XRPC handlers and any downstream code that requires the
+   * context — `HttpContext.getOrFail()` won't work on the WS-subscription
+   * path (there's no Adonis HttpContext), and prefer this even on the HTTP
+   * path so the same accessor works in both. See the spec's "HTTP-context
+   * asymmetry" section for the rationale.
    */
   static getOrFail(): XrpcContext<XrpcLexicon> {
     const ctx = XrpcContext.als.getStore()
@@ -1624,17 +1683,25 @@ test.group('XrpcContext — construction', () => {
   })
 })
 
-test.group('XrpcContext.getOrFail — ALS', () => {
-  test('throws outside any als.run scope', ({ assert }) => {
+test.group('XrpcContext.get / .getOrFail — ALS', () => {
+  test('get() returns undefined outside any als.run scope', ({ assert }) => {
+    assert.isUndefined(XrpcContext.get())
+  })
+
+  test('getOrFail() throws outside any als.run scope', ({ assert }) => {
     assert.throws(() => XrpcContext.getOrFail(), /XrpcContext is not available/)
   })
 
-  test('returns the active context inside an als.run scope', async ({ assert }) => {
+  test('get() and getOrFail() both return the active context inside an als.run scope', async ({
+    assert,
+  }) => {
     const ctx = makeContext()
     await XrpcContext.als.run(ctx, async () => {
+      assert.equal(XrpcContext.get(), ctx)
       assert.equal(XrpcContext.getOrFail(), ctx)
       await new Promise((r) => setImmediate(r))
       // Async continuation inherits the store:
+      assert.equal(XrpcContext.get(), ctx)
       assert.equal(XrpcContext.getOrFail(), ctx)
     })
   })
@@ -1738,6 +1805,255 @@ Expected: PASS — all groups.
 ```bash
 git add src/context.ts tests/context.spec.ts
 git commit -m "feat(xrpc): add XrpcContext / XrpcResponse / XrpcStream (Macroable, ALS-backed)"
+```
+
+---
+
+## Task 8b: `ExceptionHandler` base class in `src/exception_handler.ts`
+
+**Files:**
+
+- Create: `src/exception_handler.ts`
+- Create: `tests/exception_handler.spec.ts`
+
+**Why this exists:** Consumers register an XRPC error handler in `start/kernel.ts` via `xrpc.errorHandler(() => import('#exceptions/xrpc_handler'))` (the registration mechanism itself lands in Plan 04 as `XrpcService`). The handler class they author extends this base, which ships two responsibilities:
+
+1. **Sanitization** — by default, transform unexpected errors into a generic `InternalServerError` in production (so internal exception messages / stack traces don't leak to the wire) and preserve the cause in development (so debugging works). Consumers who want different sanitization override `handle()`.
+2. **Reporting** — a default no-op `report()` that consumers override to send to Sentry, structured logger, etc. Split from `handle()` so the two concerns can be customized independently — matches Adonis's own `ExceptionHandler` shape (`report` / `handle` / `shouldReport`).
+
+The class is a concrete (non-abstract) class with sensible defaults — the stub published by configure (Plan 01 Task 5) ships a thin `super`-delegating subclass that consumers fill in.
+
+`ctx` is typed `XrpcContext<XrpcLexicon> | null` because atcute-internal errors (request parsing failures, lexicon assertion errors raised before the executor materializes an `XrpcContext`) reach the handler with no context available. Plan 04's atcute hooks read `XrpcContext.get()` which returns `undefined` in that case — the hook passes `null` through.
+
+**Steps:**
+
+**Test discipline note**: TDD's RED step is skipped — the failure modes here would be "module not found" or "method not defined", both trivially predictable per the user's memory note. Implementation → tests → verify pass.
+
+- [ ] **Step 1: Implement `src/exception_handler.ts`**
+
+```ts
+import type { ApplicationService } from '@adonisjs/core/types'
+
+import { XrpcError, InternalServerError } from './errors.js'
+import type { XrpcContext } from './context.js'
+import type { XrpcLexicon } from './types.js'
+
+/**
+ * Base class for XRPC exception handlers. Consumers' `app/exceptions/xrpc_handler.ts`
+ * extends this; Plan 04's `XrpcService.errorHandler(factory)` resolves the
+ * consumer's subclass lazily on first error.
+ *
+ * Ships three methods:
+ *  - `shouldReport(error)` — defaults to `true`. Override to suppress
+ *    reporting for specific errors (validation failures the consumer
+ *    doesn't want to log, etc.).
+ *  - `report(error, ctx)`  — defaults to no-op. Override to add Sentry,
+ *    structured logging, custom metrics, etc.
+ *  - `handle(error, ctx)`  — returns the `XrpcError` that atcute will
+ *    wire-encode as the response body. Defaults: `XrpcError` instances
+ *    pass through unchanged; unexpected errors become a generic
+ *    `InternalServerError` in production (no leak), or are wrapped in
+ *    `InternalServerError` with `{ cause }` in development.
+ *
+ * The handler's constructor receives the `ApplicationService` via the
+ * container (when Plan 04's `XrpcService.getRegisteredErrorHandler()`
+ * resolves the registered subclass via `app.container.make(mod.default)`) —
+ * `this.app.inProduction` drives the production-vs-development branch.
+ */
+export class ExceptionHandler {
+  constructor(protected app: ApplicationService) {}
+
+  /**
+   * Override to suppress reporting for specific errors. Default: true
+   * (report everything).
+   */
+  shouldReport(_error: unknown): boolean {
+    return true
+  }
+
+  /**
+   * Observation hook (Sentry, structured logging, custom metrics).
+   * Default: no-op. Consumers add their reporting code by overriding.
+   *
+   * `ctx` is `null` for atcute-internal errors raised before the dispatch
+   * executor materializes an `XrpcContext` (request parsing failures,
+   * etc.) — guard with `ctx?.lexicon.id` etc.
+   */
+  async report(
+    _error: unknown,
+    _ctx: XrpcContext<XrpcLexicon> | null
+  ): Promise<void> {
+    // No-op by default.
+  }
+
+  /**
+   * Sanitize the error before atcute encodes it. Default behavior:
+   *  - `XrpcError` instances pass through unchanged (already wire-shaped
+   *    with stable `errorName` + safe `message`).
+   *  - In production, unexpected errors are replaced with a generic
+   *    `InternalServerError('Internal Server Error')` — preserves the
+   *    100-level status without leaking internal messages / stacks.
+   *  - In development, the original error's message is preserved on the
+   *    `InternalServerError` along with `{ cause: error }` so developers
+   *    can see the root cause in logs and clients see something useful.
+   *
+   * Override to customize sanitization. Call `super.handle(error, ctx)`
+   * to keep the env-aware default behavior and layer custom logic on top.
+   */
+  async handle(
+    error: unknown,
+    _ctx: XrpcContext<XrpcLexicon> | null
+  ): Promise<XrpcError> {
+    if (error instanceof XrpcError) return error
+    if (this.app.inProduction) {
+      return new InternalServerError('Internal Server Error')
+    }
+    return new InternalServerError(
+      error instanceof Error ? error.message : String(error),
+      { cause: error }
+    )
+  }
+}
+```
+
+- [ ] **Step 2: Write tests**
+
+Create `tests/exception_handler.spec.ts`:
+
+```ts
+import { test } from '@japa/runner'
+import { setupApp } from './helpers.js'
+import { ExceptionHandler } from '../src/exception_handler.js'
+import { XrpcError, InternalServerError, NotFoundError } from '../src/errors.js'
+
+test.group('ExceptionHandler — defaults', () => {
+  test('shouldReport returns true by default', async ({ assert }) => {
+    const { app } = await setupApp({})
+    const handler = new ExceptionHandler(app)
+    assert.isTrue(handler.shouldReport(new Error('whatever')))
+  })
+
+  test('report is a no-op by default', async ({ assert }) => {
+    const { app } = await setupApp({})
+    const handler = new ExceptionHandler(app)
+    // Just assert it doesn't throw and resolves to undefined
+    const result = await handler.report(new Error('whatever'), null)
+    assert.isUndefined(result)
+  })
+
+  test('handle passes through XrpcError instances unchanged', async ({ assert }) => {
+    const { app } = await setupApp({})
+    const handler = new ExceptionHandler(app)
+    const original = new NotFoundError('missing thing')
+    const result = await handler.handle(original, null)
+    assert.strictEqual(result, original)
+  })
+
+  test('handle wraps unexpected errors with InternalServerError and preserves cause in development', async ({
+    assert,
+  }) => {
+    const { app } = await setupApp({}) // default env = test (not production)
+    const handler = new ExceptionHandler(app)
+    const original = new Error('something broke internally')
+    const result = await handler.handle(original, null)
+    assert.instanceOf(result, InternalServerError)
+    assert.equal(result.message, 'something broke internally')
+    assert.strictEqual((result as any).cause, original)
+  })
+
+  test('handle replaces unexpected errors with a generic InternalServerError in production', async ({
+    assert,
+  }) => {
+    const { app } = await setupApp({})
+    // Force production mode for this assertion. Adonis's `app.inProduction`
+    // reads from `NODE_ENV` — set it before the assertion and restore after.
+    const originalEnv = process.env.NODE_ENV
+    process.env.NODE_ENV = 'production'
+    try {
+      const prodHandler = new ExceptionHandler(app)
+      // Re-read app.inProduction by spinning up a fresh app under production.
+      // (If `app.inProduction` is cached at construction, this test needs a
+      // setupApp variant that lets us pass `nodeEnvironment: 'production'`.)
+      const result = await prodHandler.handle(new Error('internal detail'), null)
+      assert.instanceOf(result, InternalServerError)
+      assert.equal(result.message, 'Internal Server Error')
+      assert.isUndefined((result as any).cause, 'cause must not leak in production')
+    } finally {
+      process.env.NODE_ENV = originalEnv
+    }
+  })
+
+  test('handle wraps non-Error throwables (strings, plain objects) safely', async ({
+    assert,
+  }) => {
+    const { app } = await setupApp({})
+    const handler = new ExceptionHandler(app)
+
+    const fromString = await handler.handle('a bare string was thrown', null)
+    assert.instanceOf(fromString, InternalServerError)
+    assert.equal(fromString.message, 'a bare string was thrown')
+
+    const fromObject = await handler.handle({ weird: 'object' }, null)
+    assert.instanceOf(fromObject, InternalServerError)
+    assert.equal(fromObject.message, '[object Object]')
+  })
+})
+
+test.group('ExceptionHandler — consumer subclass shape', () => {
+  test('subclass can override report to capture errors', async ({ assert }) => {
+    const captured: Array<{ error: unknown; nsid: string | undefined }> = []
+    class TestHandler extends ExceptionHandler {
+      async report(error: unknown, ctx: any) {
+        captured.push({ error, nsid: ctx?.lexicon?.id })
+      }
+    }
+
+    const { app } = await setupApp({})
+    const handler = new TestHandler(app)
+    await handler.report(new Error('boom'), null)
+    assert.lengthOf(captured, 1)
+    assert.equal((captured[0].error as Error).message, 'boom')
+    assert.isUndefined(captured[0].nsid)
+  })
+
+  test('subclass calling super.handle keeps the sanitization default', async ({ assert }) => {
+    let reportFired = 0
+    class TestHandler extends ExceptionHandler {
+      async report() {
+        reportFired++
+      }
+      async handle(error: unknown, ctx: any) {
+        // Custom: also count via report side-effect, then defer.
+        if (this.shouldReport(error)) {
+          await this.report(error, ctx)
+        }
+        return super.handle(error, ctx)
+      }
+    }
+
+    const { app } = await setupApp({})
+    const handler = new TestHandler(app)
+    const result = await handler.handle(new Error('boom'), null)
+    assert.equal(reportFired, 1)
+    assert.instanceOf(result, InternalServerError)
+    assert.equal(result.message, 'boom')
+  })
+})
+```
+
+If `setupApp` doesn't currently accept a `nodeEnvironment` option to drive the production-mode test, add one to `tests/helpers.ts` as part of this task — passing it through to the `IgnitorFactory` config so `app.inProduction` returns `true` under that fixture. (Confirm `setupApp`'s current shape against `tests/helpers.ts` at execution time; if a different mechanism for setting `NODE_ENV` per-test exists, prefer that.)
+
+- [ ] **Step 3: Run tests to verify pass**
+
+Run: `pnpm quick:test --files tests/exception_handler.spec.ts`
+
+Expected: all tests pass.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add src/exception_handler.ts tests/exception_handler.spec.ts
+git commit -m "feat(xrpc): add ExceptionHandler base class with env-aware default sanitization"
 ```
 
 ---
@@ -1916,6 +2232,9 @@ export { XrpcRouter, XrpcRoute, XrpcRouteGroup } from './src/router.js'
 // Runtime context types
 export { XrpcContext, XrpcResponse, XrpcStream } from './src/context.js'
 
+// Exception handler base class (consumer's app/exceptions/xrpc_handler.ts extends this)
+export { ExceptionHandler } from './src/exception_handler.js'
+
 // Errors (full hierarchy)
 export {
   XrpcError,
@@ -1976,6 +2295,7 @@ In `package.json`, replace the existing `tsdown.entry` array with:
   "./src/types.ts",
   "./src/router.ts",
   "./src/context.ts",
+  "./src/exception_handler.ts",
   "./src/errors.ts",
   "./src/utils.ts",
   "./factories/xrpc.ts"
@@ -2043,7 +2363,7 @@ Run through this checklist before handing off:
   - Public exports + tsdown entries — Task 10 ✓
   - `XrpcSerializer` — out of scope, Plan 02 ✓
   - `src/xrpc_server.ts` / middleware / WebSocket — out of scope, Plan 03 ✓
-  - Provider lifecycle / `XrpcService` / `HttpContext.xrpc` getter — out of scope, Plan 04 ✓
+  - Provider lifecycle / `XrpcService` — out of scope, Plan 04 ✓
   - `src/auth.ts` and `.auth` / `.serviceAuth()` — out of scope, Plan 05 ✓
   - Ace commands — out of scope, Plan 06 ✓
   - `indexXrpc()` codegen — out of scope, Plan 07 ✓

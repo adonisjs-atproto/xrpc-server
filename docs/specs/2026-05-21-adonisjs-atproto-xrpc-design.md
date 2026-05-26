@@ -210,7 +210,9 @@ const xrpcRouter = await this.app.container.make(XrpcRouter)
 // the getter cleanly rather than throwing `TypeError: Cannot redefine
 // property`.
 Object.defineProperty(Router.prototype, 'xrpc', {
-  get() { return xrpcRouter },
+  get() {
+    return xrpcRouter
+  },
   configurable: true,
   enumerable: false,
 })
@@ -547,7 +549,7 @@ class XrpcRouter extends Macroable {
     }
     if (!Array.isArray(handler)) {
       throw new RuntimeException(
-        'XRPC handler must be an inline function or a [Controller | LazyImport, method?] tuple',
+        'XRPC handler must be an inline function or a [Controller | LazyImport, method?] tuple'
       )
     }
     const [refOrLazy, method = 'handle'] = handler
@@ -607,7 +609,7 @@ Lives in its own module — `src/request_context.ts` — so the three pieces (th
 // src/request_context.ts
 export type RequestContext = {
   requestId: string
-  request: HttpRequest          // Adonis — surfaces on XrpcContext.request
+  request: HttpRequest // Adonis — surfaces on XrpcContext.request
   logger: Logger
   containerResolver: ContainerResolver
 }
@@ -701,7 +703,7 @@ class XrpcServer {
   #installRoutes(xrpc: XrpcRouter): void {
     if (!xrpc.committed) {
       throw new RuntimeException(
-        'XRPC builder must be committed before installing routes; call router.xrpc.commit() first',
+        'XRPC builder must be committed before installing routes; call router.xrpc.commit() first'
       )
     }
 
@@ -743,13 +745,13 @@ class XrpcServer {
     const addedCount = upgradeListeners.length - beforeCount
     if (addedCount !== 1) {
       throw new RuntimeException(
-        `@atcute/xrpc-server-node.injectWebSocket added ${addedCount} upgrade listeners (expected 1)`,
+        `@atcute/xrpc-server-node.injectWebSocket added ${addedCount} upgrade listeners (expected 1)`
       )
     }
     const atcuteListener = upgradeListeners[upgradeListeners.length - 1] as (
       req: IncomingMessage,
       socket: Duplex,
-      head: Buffer,
+      head: Buffer
     ) => Promise<void>
     nodeServer.removeListener('upgrade', atcuteListener)
 
@@ -801,7 +803,7 @@ class XrpcServer {
  */
 export type SharedXrpcExecutor = (
   atcuteCtx: UnknownOperationContext | UnknownSubscriptionContext,
-  requestCtx?: RequestContext,
+  requestCtx?: RequestContext
 ) => Promise<Response> | AsyncIterable<unknown>
 
 function createXrpcExecutor(deps: {
@@ -903,7 +905,7 @@ function createXrpcExecutor(deps: {
     if (route.lexicon.type === 'xrpc_subscription') {
       const userIterable = XrpcContext.als.run(
         xrpcCtx,
-        () => invokeHandler(xrpcCtx) as AsyncIterable<unknown>,
+        () => invokeHandler(xrpcCtx) as AsyncIterable<unknown>
       )
       return wrapSubscriptionIterator(userIterable, xrpcCtx, xrpcSerializer)
     }
@@ -930,7 +932,7 @@ function createXrpcExecutor(deps: {
         const rawBody = respState.bodySet ? respState.body : result
         const serialized = await xrpcSerializer.serializeWithoutWrapping(
           rawBody,
-          xrpcCtx.containerResolver,
+          xrpcCtx.containerResolver
         )
         return Response.json(serialized, {
           status: respState.status ?? 200,
@@ -1128,7 +1130,7 @@ export default class XrpcDispatchMiddleware {
     const webRequest = adonisRequestToWebRequest(ctx.request)
     const xrpcRouter = await ctx.containerResolver.make(XRPC_ROUTER_BINDING)
     const webResponse = await requestContextStore.run(fromHttpContext(ctx), () =>
-      xrpcRouter.fetch(webRequest),
+      xrpcRouter.fetch(webRequest)
     )
     return writeWebResponseToAdonisResponse(webResponse, ctx.response)
   }
@@ -1174,7 +1176,7 @@ The full upgrade-listener implementation lives in `XrpcServer.#installWebSocketH
 
 The `enterWith()`-vs-`run()` choice: the Node docs prefer `run()` because `enterWith()` persists for the entire synchronous execution including subsequent event handlers. In our case this is precisely the desired behavior — atcute's listener fires next in the same synchronous chain and needs to inherit the store. The "leak" the docs warn about is consumer-registered listeners on the same event inheriting our store; the store value is the same `IncomingMessage` they already receive as an argument, so the leak is information-equivalent. The package keeps the `wss` reference private to discourage consumers from adding their own `'connection'` listeners on it.
 
-**Concurrent-upgrade safety** (verified empirically on Node 26): a natural concern is that two clients handshaking in the same I/O callback would mean two `enterWith` calls back-to-back, with the second overwriting the first — and any async work scheduled during the first emit might then "see" the second emit's store. This doesn't happen. When async work is scheduled (via `await`, `setTimeout`, etc.), Node's async-hooks `init` hook captures the current ALS store at scheduling time and binds it to the new async resource. Later `enterWith` calls mutate the current resource's store but don't retroactively rewrite previously-created resources' stores — so emit-A's microtasks restore ctxA when they run, even after emit-B's `enterWith(ctxB)`. The Node docs phrase this as "persists the store through any *following* asynchronous calls" — *following* is doing the work; the persistence is forward-looking, not retroactive.
+**Concurrent-upgrade safety** (verified empirically on Node 26): a natural concern is that two clients handshaking in the same I/O callback would mean two `enterWith` calls back-to-back, with the second overwriting the first — and any async work scheduled during the first emit might then "see" the second emit's store. This doesn't happen. When async work is scheduled (via `await`, `setTimeout`, etc.), Node's async-hooks `init` hook captures the current ALS store at scheduling time and binds it to the new async resource. Later `enterWith` calls mutate the current resource's store but don't retroactively rewrite previously-created resources' stores — so emit-A's microtasks restore ctxA when they run, even after emit-B's `enterWith(ctxB)`. The Node docs phrase this as "persists the store through any _following_ asynchronous calls" — _following_ is doing the work; the persistence is forward-looking, not retroactive.
 
 ### Subscription dispatch — executor branches
 
@@ -1198,7 +1200,7 @@ if (route.lexicon.type === 'xrpc_subscription') {
 async function* wrapSubscriptionIterator(
   iterable: AsyncIterable<unknown>,
   xrpcCtx: XrpcContext<XrpcLexicon>,
-  serializer: XrpcSerializer,
+  serializer: XrpcSerializer
 ) {
   const inner = iterable[Symbol.asyncIterator]()
   try {
@@ -1230,7 +1232,9 @@ The procedure / query branch handles errors similarly via the dispatcher's outer
 ```ts
 class XrpcContext<L extends XrpcLexicon> extends Macroable {
   /** @internal — instances constructed by dispatch or XrpcContextFactory. */
-  constructor(params: { /* see executor closure for the shape */ }) { super(); /* ... */ }
+  constructor(params: { /* see executor closure for the shape */ }) {
+    super() /* ... */
+  }
 
   /**
    * Internal ALS holding the current XrpcContext instance.
@@ -1275,7 +1279,7 @@ class XrpcContext<L extends XrpcLexicon> extends Macroable {
   // Request-scoped primitives — sourced from the executor's `requestCtx`
   // (RequestContext) which is materialized at the dispatch boundary:
   request: HttpRequest // Adonis HttpRequest — .validateUsing, .header, .input, .completeUrl, .ip, etc.
-                       // atcute's Fetch Request is an executor-internal detail; consumers don't see it.
+  // atcute's Fetch Request is an executor-internal detail; consumers don't see it.
 
   /**
    * The output channel for this handler. Conditionally typed on the lexicon kind:
@@ -1406,7 +1410,9 @@ class XrpcStream<L extends XrpcSubscriptionLexicon> extends Macroable {
     this.signal = signal
   }
 
-  get aborted(): boolean { return this.signal.aborted } // shortcut
+  get aborted(): boolean {
+    return this.signal.aborted
+  } // shortcut
   readonly signal: AbortSignal // mirrors XrpcContext.signal for handler ergonomics
 
   // Typed message builder — narrows payload to the specific ref's schema:
@@ -2297,16 +2303,16 @@ Items the package might grow into post-v1:
 
 The sections above have been amended in-place for load-bearing decisions made during Plan 03 drafting and review. The following are smaller drift items where the canonical truth lives in Plan 03 (`docs/plans/2026-05-24-xrpc-plan-03-dispatch.md`) rather than this spec — recorded here so future readers know to cross-reference:
 
-| Drift | Spec says | Plan 03 says |
-|-------|-----------|--------------|
-| Provider filename | `providers/xrpc_provider.ts` | `providers/provider.ts` |
-| Router declarations file | `src/builder.ts` | `src/router.ts` |
-| Subscription handler context module | `src/http_context.ts` | `requestContextStore` (typed `AsyncLocalStorage<RequestContext>`) + `RequestContext` type + `fromHttpContext` helper live in `src/request_context.ts` |
-| Test factory module | `factories/http.ts` | `factories/xrpc.ts` |
-| Test helpers entry shape | (not specified) | `src/test_utils.ts` (flat single file at `src/` — not `src/test_utils/index.ts`) |
-| Subpath exports list | omits `./test_utils`, `./event-stream/framing` | both ship in Plan 03 |
-| `XrpcService` + `services/xrpc.ts` | shown in § Package layout as Plan 03 scope | Plan 04 ships these (provider in Plan 03 is minimal) |
-| `services/router.ts` singleton accessor | shown in § Package layout | descoped — no consumer use case for the atcute `XRPCRouter` outside the dispatch path |
+| Drift                                   | Spec says                                      | Plan 03 says                                                                                                                                          |
+| --------------------------------------- | ---------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Provider filename                       | `providers/xrpc_provider.ts`                   | `providers/provider.ts`                                                                                                                               |
+| Router declarations file                | `src/builder.ts`                               | `src/router.ts`                                                                                                                                       |
+| Subscription handler context module     | `src/http_context.ts`                          | `requestContextStore` (typed `AsyncLocalStorage<RequestContext>`) + `RequestContext` type + `fromHttpContext` helper live in `src/request_context.ts` |
+| Test factory module                     | `factories/http.ts`                            | `factories/xrpc.ts`                                                                                                                                   |
+| Test helpers entry shape                | (not specified)                                | `src/test_utils.ts` (flat single file at `src/` — not `src/test_utils/index.ts`)                                                                      |
+| Subpath exports list                    | omits `./test_utils`, `./event-stream/framing` | both ship in Plan 03                                                                                                                                  |
+| `XrpcService` + `services/xrpc.ts`      | shown in § Package layout as Plan 03 scope     | Plan 04 ships these (provider in Plan 03 is minimal)                                                                                                  |
+| `services/router.ts` singleton accessor | shown in § Package layout                      | descoped — no consumer use case for the atcute `XRPCRouter` outside the dispatch path                                                                 |
 
 Plan 03 is the source of truth for all of the above. When the spec next gets a comprehensive rewrite, fold these inline; until then, treat the spec's § Package layout and § Public exports as historical snapshots.
 
@@ -2314,12 +2320,12 @@ Plan 03 is the source of truth for all of the above. When the spec next gets a c
 
 The following are deliberate divergences introduced during Plan 04 drafting (`docs/plans/2026-05-25-xrpc-plan-04-provider.md`) — recorded here so future readers know to cross-reference. Plan 04 is the source of truth for each.
 
-| Divergence | Spec says | Plan 04 says |
-|------------|-----------|--------------|
-| Error-handler slot count | Two handlers — `errorHandler` (HTTP) and `subscriptionErrorHandler` (WS) with fall-through to the HTTP handler when the WS slot is unset (spec §_XrpcService_, ~lines 1586-1670). | Single `errorHandler` slot — both HTTP and WS paths invoke the one consumer-registered class. The dual-slot fall-through was unmotivated for v1 (no consumer needed asymmetric reporters); collapsing is non-breaking — single-slot is a strict subset that can be re-split later if a use case appears. |
-| `HttpContext.xrpc` Macroable getter | Ships on `HttpContext` at spec lines 1692-1740. | Dropped from v1. Consumers call `XrpcContext.getOrFail()` directly. The Macroable getter would only succeed on the HTTP-triggered path (WS has no `HttpContext`), so the asymmetry made the API more confusing than useful — `XrpcContext.getOrFail()` works symmetrically in both paths. |
-| `REPORTED` symbol error-dedup | Not described. | Plan 04 stamps caught errors with a `REPORTED` symbol so the executor's catch block doesn't double-report errors that already flowed through atcute's `handleException` hook. Implementation detail handling the executor-catch-vs-atcute-hook double-fire window — invisible to consumers. |
-| `XrpcServer.shutdown(graceMs?)` default | Sketched as "wait briefly for ack with a hard timeout; force `.terminate()` survivors" (§_Lifecycle phases_ point 8, ~line 1077). | Pinned at 3000ms default, sends 1001 close frames on graceful shutdown, force-`.terminate()`s survivors after the grace window. `defineConfig({ shutdownGraceMs })` was considered and deferred — single default is fine for v1, configurability is additive when needed. |
+| Divergence                              | Spec says                                                                                                                                                                         | Plan 04 says                                                                                                                                                                                                                                                                                             |
+| --------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Error-handler slot count                | Two handlers — `errorHandler` (HTTP) and `subscriptionErrorHandler` (WS) with fall-through to the HTTP handler when the WS slot is unset (spec §_XrpcService_, ~lines 1586-1670). | Single `errorHandler` slot — both HTTP and WS paths invoke the one consumer-registered class. The dual-slot fall-through was unmotivated for v1 (no consumer needed asymmetric reporters); collapsing is non-breaking — single-slot is a strict subset that can be re-split later if a use case appears. |
+| `HttpContext.xrpc` Macroable getter     | Ships on `HttpContext` at spec lines 1692-1740.                                                                                                                                   | Dropped from v1. Consumers call `XrpcContext.getOrFail()` directly. The Macroable getter would only succeed on the HTTP-triggered path (WS has no `HttpContext`), so the asymmetry made the API more confusing than useful — `XrpcContext.getOrFail()` works symmetrically in both paths.                |
+| `REPORTED` symbol error-dedup           | Not described.                                                                                                                                                                    | Plan 04 stamps caught errors with a `REPORTED` symbol so the executor's catch block doesn't double-report errors that already flowed through atcute's `handleException` hook. Implementation detail handling the executor-catch-vs-atcute-hook double-fire window — invisible to consumers.              |
+| `XrpcServer.shutdown(graceMs?)` default | Sketched as "wait briefly for ack with a hard timeout; force `.terminate()` survivors" (§_Lifecycle phases_ point 8, ~line 1077).                                                 | Pinned at 3000ms default, sends 1001 close frames on graceful shutdown, force-`.terminate()`s survivors after the grace window. `defineConfig({ shutdownGraceMs })` was considered and deferred — single default is fine for v1, configurability is additive when needed.                                |
 
 When the spec next gets a comprehensive rewrite, fold these inline.
 

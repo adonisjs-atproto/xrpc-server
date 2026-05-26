@@ -85,7 +85,7 @@ These verifications must pass before executing this plan. Don't run task subagen
 
 - [ ] **Step 1: Implement `src/xrpc_service.ts`**
 
-```ts
+````ts
 import type { ApplicationService } from '@adonisjs/core/types'
 import type { LazyImport } from '@poppinss/utils/types'
 
@@ -147,9 +147,7 @@ export class XrpcService {
    * The factory is invoked lazily on first error; the resolved instance is
    * memoized.
    */
-  errorHandler(
-    factory: LazyImport<{ default: new (...args: any[]) => ExceptionHandler }>
-  ): this {
+  errorHandler(factory: LazyImport<{ default: new (...args: any[]) => ExceptionHandler }>): this {
     this.#errorHandlerFactory = factory
     return this
   }
@@ -172,7 +170,7 @@ export class XrpcService {
     return this.#resolvedErrorHandler
   }
 }
-```
+````
 
 Implementation notes:
 
@@ -271,7 +269,7 @@ The file pattern is taken verbatim from `@adonisjs/core/services/server.ts` — 
 
 - [ ] **Step 1: Implement `services/xrpc.ts`**
 
-```ts
+````ts
 import app from '@adonisjs/core/services/app'
 import type { XrpcService } from '../src/xrpc_service.js'
 
@@ -296,7 +294,7 @@ await app.booted(async () => {
 })
 
 export { xrpc as default }
-```
+````
 
 Implementation notes:
 
@@ -473,7 +471,7 @@ async function* wrapSubscriptionIterator(
   iterable: AsyncIterable<unknown>,
   xrpcCtx: XrpcContext<XrpcLexicon>,
   xrpc: XrpcService,
-  serializer: XrpcSerializer,
+  serializer: XrpcSerializer
 ) {
   // ... existing body, with the catch block above replacing the Plan 03 seam
 }
@@ -511,9 +509,7 @@ test('subscription handler error: report() fires + XRPCSubscriptionError wraps t
   // sanitized XrpcError's `errorName` / `message`.
 })
 
-test('falls back to InternalServerError wrap when no handler is registered', async ({
-  assert,
-}) => {
+test('falls back to InternalServerError wrap when no handler is registered', async ({ assert }) => {
   // Construct XrpcService with no errorHandler registered. Invoke a route
   // whose handler throws a plain Error. Assert the thrown error is an
   // InternalServerError with `cause` preserved (Plan 03 default behavior).
@@ -713,10 +709,9 @@ function makeAtcuteHook(xrpc: XrpcService) {
       const fallback =
         err instanceof XrpcError
           ? err
-          : new InternalServerError(
-              err instanceof Error ? err.message : String(err),
-              { cause: err }
-            )
+          : new InternalServerError(err instanceof Error ? err.message : String(err), {
+              cause: err,
+            })
       ;(fallback as any)[REPORTED] = true
       throw fallback
     }
@@ -873,10 +868,7 @@ async shutdown(graceMs = 3000): Promise<void> {
 Add the helper outside the class (or in a private static):
 
 ```ts
-async function waitForAllClientsClosed(
-  wss: WebSocketServer,
-  graceMs: number,
-): Promise<void> {
+async function waitForAllClientsClosed(wss: WebSocketServer, graceMs: number): Promise<void> {
   if (wss.clients.size === 0) return
   return new Promise((resolve) => {
     const start = Date.now()
@@ -1020,7 +1012,9 @@ test.group('end-to-end error reporting', () => {
         const router = await app.container.make('router')
         router.xrpc.procedure(
           { id: 'com.example.fail', type: 'xrpc_procedure', defs: { main: {} } } as any,
-          () => { throw new Error('internal boom') }
+          () => {
+            throw new Error('internal boom')
+          }
         )
         const xrpc = await app.container.make('xrpc')
         xrpc.errorHandler(async () => ({ default: SpyHandler }))

@@ -1749,7 +1749,9 @@ export default class XrpcProvider implements ContainerProviderContract {
     // `setupApp()` calls in the test suite redefines the getter cleanly
     // rather than throwing `TypeError: Cannot redefine property`.
     Object.defineProperty(Router.prototype, 'xrpc', {
-      get() { return xrpcRouter },
+      get() {
+        return xrpcRouter
+      },
       configurable: true,
       enumerable: false,
     })

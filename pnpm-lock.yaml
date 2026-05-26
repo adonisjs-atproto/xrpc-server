@@ -11,6 +11,12 @@ importers:
       '@atcute/lexicons':
         specifier: ^2.0.0
         version: 2.0.0
+      '@atcute/xrpc-server':
+        specifier: ^2.0.0
+        version: 2.0.0(@atcute/cid@2.4.1)(@atcute/lexicons@2.0.0)(typescript@5.9.3)
+      '@atcute/xrpc-server-node':
+        specifier: ^2.0.0
+        version: 2.0.0(@atcute/xrpc-server@2.0.0(@atcute/cid@2.4.1)(@atcute/lexicons@2.0.0)(typescript@5.9.3))
       '@poppinss/macroable':
         specifier: ^1.1.2
         version: 1.1.2
@@ -340,14 +346,52 @@ packages:
     resolution: {integrity: sha512-3kK6hCxyinsxZIM6p/gWoN33v0GgxBXU6uDbM/J2j3t7f9lXRvA1J+8HeiemCtXNA75H1EK5Oo7/E28HOhYHDg==}
     engines: {node: '>= 10'}
 
+  '@atcute/cbor@2.3.3':
+    resolution: {integrity: sha512-zZ4nHOK837zTMWJtta35YD7pcukrTzDc8jkpIGlSgoDYzu3l4BX3WVgpPJtRn3K6h2v97uyiWfiVjSpM7JSFzQ==}
+    peerDependencies:
+      '@atcute/cid': ^2.0.0
+
+  '@atcute/cid@2.4.1':
+    resolution: {integrity: sha512-bwhna69RCv7yetXudtj+2qrMPYvhhIQqvJz6YUpUS98v7OdF3X2dnye9Nig2NDrklZcuyOsu7sQo7GOykJXRLQ==}
+
+  '@atcute/crypto@2.4.1':
+    resolution: {integrity: sha512-tJ3Pi/XYcAsABKtqSlSOTKfO5YiQ4XdqlTuPS8HiRZSezOPcXBFFzAFWpSIJPURbVPFQL3LLrrK0Ea24wl5qeQ==}
+
+  '@atcute/identity-resolver@2.0.0':
+    resolution: {integrity: sha512-IKg1BDQAF2bIdN10DL6KAXmTjK+3enTU2IRbuani9TsFahBwGZ7O5FiVmTiL6QlGfauGNW5S0xNCOxWXWMoR2Q==}
+    peerDependencies:
+      '@atcute/identity': ^2.0.0
+      '@atcute/lexicons': ^2.0.0
+
+  '@atcute/identity@2.0.0':
+    resolution: {integrity: sha512-YXFsggO7eJYifqkN85+kUXJE2a1iI9AyuzPTDjtS/4WE1Zs1/XiPkWmwZlAgtp+pYhVtjm3mJqy/h/mZ0OnIVw==}
+    peerDependencies:
+      '@atcute/lexicons': ^2.0.0
+
   '@atcute/lexicons@2.0.0':
     resolution: {integrity: sha512-fIlwP+TPEAGoF5aU5s+f8N5sOjOu8Mww/sQL1B57Dp2hj3G/EWG9XwOHPokzycBCgXx+UxIIrzZCGy8whsVDZw==}
+
+  '@atcute/multibase@1.2.0':
+    resolution: {integrity: sha512-ZK2GRra+qIYq9nNuQB52m2ul0hOmCQEtPobGfTSUxm7pF0OGEkWGkWHugFhNEDVzHzTwPxHp6VGotdZFue4lYQ==}
 
   '@atcute/uint8array@1.1.2':
     resolution: {integrity: sha512-n+lutnbN9mKzSjSVdfsYfzJ40u2971H+iLSL46D6d7zcrA4delxusf/ftGFvj5oGW03OioaFgQOy3Lqa3JmTeA==}
 
+  '@atcute/util-fetch@2.0.0':
+    resolution: {integrity: sha512-v+4aFQ/tuBqTV+URDJaFgm3mASWdglKXiPaGutJ1bs7QtQKmPZeesPY5MzW/a+MtI8GWCEJk8X9wOfalPOFSlg==}
+
   '@atcute/util-text@1.3.1':
     resolution: {integrity: sha512-MRgJXkx67znuBXuoAYCJkBZyd3OApL7zZlNf5kXhuoCXcdiu1nblRDycYTADSkym4epBSQWxh26kmI9sewaq6A==}
+
+  '@atcute/xrpc-server-node@2.0.0':
+    resolution: {integrity: sha512-S9eMNHqW8YhJAG47m9sPuaY28lzDibAvuUs1B+qS/UUltfsk5F9YNr9sVU5Ex8ewRfyaup/wL5dSQZQ5yVBZaA==}
+    peerDependencies:
+      '@atcute/xrpc-server': ^2.0.0
+
+  '@atcute/xrpc-server@2.0.0':
+    resolution: {integrity: sha512-HYfuxEqZ5XZIh0pGBlrRrnnqblIaP30OQf7/8lcwbzpZUEZy25BUmt6XrAqqs+bGQOpY+DagZyspFRn5F2joRA==}
+    peerDependencies:
+      '@atcute/lexicons': ^2.0.0
 
   '@babel/code-frame@7.27.1':
     resolution: {integrity: sha512-cjQ7ZlQ0Mv3b47hABuTevyTuYN4i+loJKGeV9flcCgIK37cCXRh+L1bd3iBHlynerhQ7BhCkn2BPbQUL+rGqFg==}
@@ -623,6 +667,9 @@ packages:
 
   '@napi-rs/wasm-runtime@1.1.1':
     resolution: {integrity: sha512-p64ah1M1ld8xjWv3qbvFwHiFVWrq1yFvV4f7w+mzaqiR4IlSgkqhcRdHwsGgomwzBH51sRY4NEowLxnaBjcW/A==}
+
+  '@noble/secp256k1@3.1.0':
+    resolution: {integrity: sha512-+F7iS7tUMaNGXcc9X3PjmjvuQnXEuSjCRNzVVA2xAcKXgCaP0dHYz4SFyt4FKNHef7sOP//xihowcySSS7PK9g==}
 
   '@nodelib/fs.scandir@2.1.5':
     resolution: {integrity: sha512-vq24Bq3ym5HEQm2NKCr3yXDwjc7vTsEThRDnkp2DK9p1uqLR+DHurm/NOTo0KG7HYHU7eppKZj3MyqYuMBf62g==}
@@ -2183,6 +2230,11 @@ packages:
   mz@2.7.0:
     resolution: {integrity: sha512-z81GNO7nnYMEhrGh9LeymoE4+Yr0Wn5McHIZMK5cfQCl+NDX08sCZgUc9/6MHni9IWuFLm1Z3HTCXu2z9fN62Q==}
 
+  nanoid@5.1.11:
+    resolution: {integrity: sha512-v+KEsUv2ps74PaSKv0gHTxTCgMXOIfBEbaqa6w6ISIGC7ZsvHN4N9oJ8d4cmf0n5oTzQz2SLmThbQWhjd/8eKg==}
+    engines: {node: ^18 || >=20}
+    hasBin: true
+
   napi-build-utils@2.0.0:
     resolution: {integrity: sha512-GEbrYkbfF7MoNaoh2iGG84Mnf/WZfB0GdGEsM8wz7Expx/LlWf5U8t9nvJKXSp3qr5IsEbK04cBGhol/KwOsWA==}
 
@@ -2958,6 +3010,14 @@ packages:
     resolution: {integrity: sha512-kiGUalWN+rgBJ/1OHZsBtU4rXZOfj/7rKQxULKlIzwzQSvMJUUNgPwJEEh7gU6xEVxC0ahoOBvN2YI8GH6FNgA==}
     engines: {node: '>=10.12.0'}
 
+  valibot@1.4.1:
+    resolution: {integrity: sha512-klCmFTz2jeDluy9RwX+F884TCiogtdBJ/YaxSx1EOBYXa3NXNWj8kR1jjN8rzluwojJVWWaHJ4r1U5LfICnM3g==}
+    peerDependencies:
+      typescript: '>=5'
+    peerDependenciesMeta:
+      typescript:
+        optional: true
+
   validate-npm-package-license@3.0.4:
     resolution: {integrity: sha512-DpKm2Ui/xN7/HQKCtpZxoRWBhZ9Z0kqtygG8XCgNQ8ZlDnxuQmWhj566j8fN4Cu3/JmbhsDo7fcAJq4s9h27Ew==}
 
@@ -2998,6 +3058,18 @@ packages:
 
   wrappy@1.0.2:
     resolution: {integrity: sha512-l4Sp/DRseor9wL6EvV2+TuQn63dMkPjZ/sp9XkghTEbV9KlPS1xUsZ3u7/IQO4wxtcFB4bgpQPRcR3QCvezPcQ==}
+
+  ws@8.21.0:
+    resolution: {integrity: sha512-Vsp28b7DRcimFQvrqu2Wek3z1iYxDCWqHYB8Qsnk/S4RfaCQzPGPyBNuVjJV3cd6UiKtUtp6sNM77gWvzcCH+g==}
+    engines: {node: '>=10.0.0'}
+    peerDependencies:
+      bufferutil: ^4.0.1
+      utf-8-validate: '>=5.0.2'
+    peerDependenciesMeta:
+      bufferutil:
+        optional: true
+      utf-8-validate:
+        optional: true
 
   wsl-utils@0.3.1:
     resolution: {integrity: sha512-g/eziiSUNBSsdDJtCLB8bdYEUMj4jR7AGeUo96p/3dTafgjHhpF4RiCFPiRILwjQoDXx5MqkBr4fwWtR3Ky4Wg==}
@@ -3370,6 +3442,39 @@ snapshots:
       '@ast-grep/napi-win32-ia32-msvc': 0.41.0
       '@ast-grep/napi-win32-x64-msvc': 0.41.0
 
+  '@atcute/cbor@2.3.3(@atcute/cid@2.4.1)':
+    dependencies:
+      '@atcute/cid': 2.4.1
+      '@atcute/multibase': 1.2.0
+      '@atcute/uint8array': 1.1.2
+
+  '@atcute/cid@2.4.1':
+    dependencies:
+      '@atcute/multibase': 1.2.0
+      '@atcute/uint8array': 1.1.2
+
+  '@atcute/crypto@2.4.1':
+    dependencies:
+      '@atcute/multibase': 1.2.0
+      '@atcute/uint8array': 1.1.2
+      '@noble/secp256k1': 3.1.0
+
+  '@atcute/identity-resolver@2.0.0(@atcute/identity@2.0.0(@atcute/lexicons@2.0.0)(typescript@5.9.3))(@atcute/lexicons@2.0.0)(typescript@5.9.3)':
+    dependencies:
+      '@atcute/identity': 2.0.0(@atcute/lexicons@2.0.0)(typescript@5.9.3)
+      '@atcute/lexicons': 2.0.0
+      '@atcute/util-fetch': 2.0.0(typescript@5.9.3)
+      valibot: 1.4.1(typescript@5.9.3)
+    transitivePeerDependencies:
+      - typescript
+
+  '@atcute/identity@2.0.0(@atcute/lexicons@2.0.0)(typescript@5.9.3)':
+    dependencies:
+      '@atcute/lexicons': 2.0.0
+      valibot: 1.4.1(typescript@5.9.3)
+    transitivePeerDependencies:
+      - typescript
+
   '@atcute/lexicons@2.0.0':
     dependencies:
       '@atcute/uint8array': 1.1.2
@@ -3377,11 +3482,44 @@ snapshots:
       '@standard-schema/spec': 1.1.0
       esm-env: 1.2.2
 
+  '@atcute/multibase@1.2.0':
+    dependencies:
+      '@atcute/uint8array': 1.1.2
+
   '@atcute/uint8array@1.1.2': {}
+
+  '@atcute/util-fetch@2.0.0(typescript@5.9.3)':
+    dependencies:
+      valibot: 1.4.1(typescript@5.9.3)
+    transitivePeerDependencies:
+      - typescript
 
   '@atcute/util-text@1.3.1':
     dependencies:
       unicode-segmenter: 0.14.5
+
+  '@atcute/xrpc-server-node@2.0.0(@atcute/xrpc-server@2.0.0(@atcute/cid@2.4.1)(@atcute/lexicons@2.0.0)(typescript@5.9.3))':
+    dependencies:
+      '@atcute/xrpc-server': 2.0.0(@atcute/cid@2.4.1)(@atcute/lexicons@2.0.0)(typescript@5.9.3)
+      ws: 8.21.0
+    transitivePeerDependencies:
+      - bufferutil
+      - utf-8-validate
+
+  '@atcute/xrpc-server@2.0.0(@atcute/cid@2.4.1)(@atcute/lexicons@2.0.0)(typescript@5.9.3)':
+    dependencies:
+      '@atcute/cbor': 2.3.3(@atcute/cid@2.4.1)
+      '@atcute/crypto': 2.4.1
+      '@atcute/identity': 2.0.0(@atcute/lexicons@2.0.0)(typescript@5.9.3)
+      '@atcute/identity-resolver': 2.0.0(@atcute/identity@2.0.0(@atcute/lexicons@2.0.0)(typescript@5.9.3))(@atcute/lexicons@2.0.0)(typescript@5.9.3)
+      '@atcute/lexicons': 2.0.0
+      '@atcute/multibase': 1.2.0
+      '@atcute/uint8array': 1.1.2
+      nanoid: 5.1.11
+      valibot: 1.4.1(typescript@5.9.3)
+    transitivePeerDependencies:
+      - '@atcute/cid'
+      - typescript
 
   '@babel/code-frame@7.27.1':
     dependencies:
@@ -3775,6 +3913,8 @@ snapshots:
       '@emnapi/runtime': 1.8.1
       '@tybys/wasm-util': 0.10.1
     optional: true
+
+  '@noble/secp256k1@3.1.0': {}
 
   '@nodelib/fs.scandir@2.1.5':
     dependencies:
@@ -5173,6 +5313,8 @@ snapshots:
       object-assign: 4.1.1
       thenify-all: 1.6.0
 
+  nanoid@5.1.11: {}
+
   napi-build-utils@2.0.0: {}
 
   natural-compare@1.4.0: {}
@@ -5914,6 +6056,10 @@ snapshots:
       '@types/istanbul-lib-coverage': 2.0.6
       convert-source-map: 2.0.0
 
+  valibot@1.4.1(typescript@5.9.3):
+    optionalDependencies:
+      typescript: 5.9.3
+
   validate-npm-package-license@3.0.4:
     dependencies:
       spdx-correct: 3.2.0
@@ -5952,6 +6098,8 @@ snapshots:
       strip-ansi: 7.1.2
 
   wrappy@1.0.2: {}
+
+  ws@8.21.0: {}
 
   wsl-utils@0.3.1:
     dependencies:

@@ -75,6 +75,9 @@ importers:
       '@poppinss/ts-exec':
         specifier: ^1.4.4
         version: 1.4.4
+      '@poppinss/utils':
+        specifier: ^7.0.1
+        version: 7.0.1
       '@types/better-sqlite3':
         specifier: ^7.6.13
         version: 7.6.13

@@ -1,8 +1,7 @@
 import type { ApplicationService } from '@adonisjs/core/types'
+import type { LazyImport } from '@poppinss/utils/types'
 
 import type { ExceptionHandler } from './exception_handler.js'
-
-type LazyImport<T> = () => Promise<T>
 
 /**
  * Module marker stamped on errors after the consumer's handler has run
@@ -42,7 +41,7 @@ export const REPORTED: unique symbol = Symbol('xrpc:reported')
  */
 export class XrpcService {
   #app: ApplicationService
-  #errorHandlerFactory?: LazyImport<{ default: new (...args: any[]) => ExceptionHandler }>
+  #errorHandlerFactory?: LazyImport<new (...args: any[]) => ExceptionHandler>
   #resolvedErrorHandler?: ExceptionHandler
 
   constructor(app: ApplicationService) {
@@ -61,7 +60,7 @@ export class XrpcService {
    * The factory is invoked lazily on first error; the resolved instance is
    * memoized.
    */
-  errorHandler(factory: LazyImport<{ default: new (...args: any[]) => ExceptionHandler }>): this {
+  errorHandler(factory: LazyImport<new (...args: any[]) => ExceptionHandler>): this {
     this.#errorHandlerFactory = factory
     return this
   }

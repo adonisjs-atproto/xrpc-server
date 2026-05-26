@@ -166,15 +166,20 @@ export class XrpcServer {
       // Same fallback as `fromHttpContext` — keeps `RequestContext.requestId`
       // always a string regardless of consumer's `generateRequestId` setting.
       const requestId = request.id() ?? crypto.randomUUID()
-      const baseLogger = await this.#app.container.make('logger')
-      const logger = baseLogger.child({ request_id: requestId })
+      const logger = await this.#app.container.make('logger')
+      const requestLogger = logger.child({ request_id: requestId })
       const containerResolver = this.#app.container.createResolver()
 
       // `enterWith` (not `run`) so the store survives the synchronous chain
       // when we delegate to atcute's captured listener (which awaits async
       // work in router.fetch — those continuations inherit our store via
       // async-hooks init snapshotting).
-      requestContextStore.enterWith({ requestId, request, logger, containerResolver })
+      requestContextStore.enterWith({
+        requestId,
+        request,
+        logger: requestLogger,
+        containerResolver,
+      })
 
       await atcuteListener(req, socket, head)
     })
@@ -195,8 +200,7 @@ export class XrpcServer {
     // undefined here (i.e. a dispatch boundary skipped its `enterWith` /
     // `run`), the executor throws InternalServerError with a clear diagnostic
     // — no non-null assertion needed at this call site.
-    const handler = (atcuteCtx: any) =>
-      this.#executor(atcuteCtx, requestContextStore.getStore())
+    const handler = (atcuteCtx: any) => this.#executor(atcuteCtx, requestContextStore.getStore())
 
     // Atcute's add* methods type the handler per route kind (Response for
     // procedure/query; AsyncIterable for subscription) — our shared closure
@@ -217,9 +221,9 @@ export class XrpcServer {
           // Exhaustiveness — if the lexicon shape adds a new method type
           // (unlikely; the spec hasn't changed in years), this surfaces a
           // type error at compile time so we catch it before runtime.
-          const _exhaustive: never = route.lexicon as never
+          const exhaustive: never = route.lexicon as never
           throw new InternalServerError(
-            `Unhandled XRPC lexicon type at install: ${String((_exhaustive as any).type)}`
+            `Unhandled XRPC lexicon type at install: ${String((exhaustive as any).type)}`
           )
         }
       }

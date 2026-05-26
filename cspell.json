@@ -17,6 +17,7 @@
     "codegened",
     "codemod",
     "dedup",
+    "descoped",
     "desync",
     "ECONNRESET",
     "empts",

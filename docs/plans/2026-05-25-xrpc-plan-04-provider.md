@@ -952,7 +952,6 @@ test.group('XrpcServer.shutdown() — graceful WS teardown', () => {
 
   test('no-op when no clients are connected', async ({ assert }) => {
     const { app } = await setupApp({
-      environment: 'web',
       rcFileContents: { providers: [() => import('../providers/provider.js')] },
     })
     const xrpcServer = await app.container.make(XrpcServer)
@@ -1018,8 +1017,7 @@ test.group('end-to-end error reporting', () => {
       }
     }
 
-    const { app, server } = await setupApp({
-      environment: 'web',
+    const { app } = await setupApp({
       rcFileContents: { providers: [() => import('../providers/provider.js')] },
       beforeReady: async (app) => {
         const router = await app.container.make('router')
@@ -1032,6 +1030,10 @@ test.group('end-to-end error reporting', () => {
       },
     })
 
+    // `setupApp` returns `{ testUtils, app, terminate }` — resolve the server
+    // from the container the same way Plan 03 Task 8 does. (See pre-existing
+    // `tests/helpers.ts` for the fixture's return shape.)
+    const server = await app.container.make('server')
     const response = await server.inject({
       method: 'POST',
       url: '/xrpc/com.example.fail',
@@ -1136,30 +1138,17 @@ export type { XrpcService } from './src/xrpc_service.js'
 
 Type-only — the runtime `XrpcService` class isn't directly constructible by consumers (they get a singleton via `services/xrpc.ts`), so re-exporting the class itself would invite consumer code that does `new XrpcService(app)` for no reason. Type-only export keeps the type accessible for annotations without the runtime confusion. (`ExceptionHandler` was already re-exported as a runtime class by Plan 01 Task 10 — don't re-add.)
 
-- [ ] **Step 2: Add `./services/xrpc` to `package.json#exports`**
+- [ ] **Step 2: Verify `./services/xrpc` is in `package.json#exports`**
 
-Edit `package.json`:
+The `./services/xrpc` subpath is added by Plan 01 (Task 10 — the file is scaffolded from the initial commit, and Plan 01 wires up the export entry). Plan 04 fills in the accessor body (Task 2 above) but doesn't need to touch the export map. Verify the entry is present:
 
-```jsonc
-{
-  "exports": {
-    ".": { ... },
-    "./middleware": { ... },
-    "./test_utils": { ... },
-    "./event-stream/framing": { ... },
-
-    // NEW (Plan 04):
-    "./services/xrpc": {
-      "types": "./build/services/xrpc.d.ts",
-      "import": "./build/services/xrpc.js"
-    }
-  }
-}
+```bash
+jq '.exports["./services/xrpc"]' package.json
 ```
 
-The build output path mirrors the source path because `tsdown` emits unbundled ESM with the source tree preserved.
+Expected: a non-null value pointing at `./build/services/xrpc.js`. If absent (Plan 01 not executed yet or its Task 10 was skipped), add it here.
 
-- [ ] **Step 3: Add `./services/xrpc` to `tsdown.entry`**
+- [ ] **Step 3: Verify `./services/xrpc.ts` is in `tsdown.entry`**
 
 In `package.json#tsdown.entry`:
 
@@ -1169,17 +1158,17 @@ In `package.json#tsdown.entry`:
     "entry": [
       "index.ts",
       "configure.ts",
+      "services/xrpc.ts",          // present from Plan 01 Task 10
       "src/middleware/dispatch.ts",
       "src/test_utils.ts",
-      "src/event-stream/framing.ts",
-
-      // NEW (Plan 04):
-      "services/xrpc.ts"
+      "src/event-stream/framing.ts"
     ],
     ...
   }
 }
 ```
+
+Verify with: `jq '.tsdown.entry | index("services/xrpc.ts")' package.json` — expected: a non-null index. If absent, add it here.
 
 - [ ] **Step 4: Verify build produces the expected output structure**
 

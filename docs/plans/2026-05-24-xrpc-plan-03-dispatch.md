@@ -10,7 +10,7 @@
 
 **Spec reference:** `docs/specs/2026-05-21-adonisjs-atproto-xrpc-design.md` §§ _XrpcServer — internal dispatch orchestrator_, _Dispatch: HTTP middleware (procedure + query)_, _Dispatch: WebSocket upgrade (subscription)_, _Subscription dispatch — executor branches_, _Lifecycle phases_.
 
-**Implementation scope:** The plan series (01–04) lands the XRPC package up to — but not including — auth. The design spec covers auth in full because the overall system had to be designed knowing where the seams sit and how `XrpcContext` would be shaped, but a plan-executing implementor doesn't need to think about auth at all: there are no auth-related comment-anchors, types, or "Plan 05 will splice here" placeholders left in code. When the auth work is eventually planned, it will lay its own seams against whatever the codebase looks like at that point. References to `auth` you do encounter in this plan are limited to the existing `RouteInfo.auth` field (from Plan 01's data structure) which is carried through the executor unread — Plan 03 neither constructs an `XrpcAuth`, nor pre-triggers verification, nor surfaces an `auth` field on `XrpcContext`.
+**Implementation scope:** The plan series (01–04) lands the XRPC package up to — but not including — auth. The design spec covers auth in full because the overall system had to be designed knowing where the seams sit and how `XrpcContext` would be shaped, but a plan-executing implementor doesn't need to think about auth at all: there are no auth-related comment-anchors, types, or "Plan 05 will splice here" placeholders left in code. When the auth work is eventually planned, it will lay its own seams against whatever the codebase looks like at that point. Plan 01's `RouteInfo` deliberately has no `auth` field — Plan 05 will graft `auth: RouteAuthDecl` onto it via declaration merging. Plan 03 neither constructs an `XrpcAuth`, nor pre-triggers verification, nor surfaces an `auth` field on `XrpcContext`.
 
 **Depends on:** Plan 01 (foundation) — `src/types.ts`, `src/router.ts` (`XrpcRouter`, `RouteInfo`, `NormalizedHandler`, `XrpcHandlerInput`; **handler normalization runs at register time** via fold's `moduleCaller`/`moduleImporter`, so Plan 03's executor consumes the normalized shape directly and does no handler resolution of its own), `src/context.ts` (`XrpcContext`, `XrpcContext.als`, `XrpcResponse`, `XrpcStream`), `src/errors.ts` (`XrpcError`, `InternalServerError`, `NotFoundError`), `src/utils.ts` (`adonisRequestToWebRequest`, `writeWebResponseToAdonisResponse`). Plan 02 (serializer) — `src/serializer.ts` (`XrpcSerializer`).
 
@@ -614,7 +614,7 @@ function makeRequestCtx(): RequestContext {
 }
 
 test.group('createXrpcExecutor — HTTP procedure path', (group) => {
-  group.each.setup(() => setupApp({ environment: 'web' }))
+  group.each.setup(() => setupApp())
 
   test('invokes an inline handler and serializes its return value', async ({ assert, app }) => {
     let invocations = 0
@@ -634,7 +634,6 @@ test.group('createXrpcExecutor — HTTP procedure path', (group) => {
                 return { pong: true, requestId: ctx.requestId }
               },
             },
-            auth: { serviceAuth: false, optional: false },
           },
         ],
       ]),
@@ -684,7 +683,6 @@ test.group('createXrpcExecutor — HTTP procedure path', (group) => {
                 // the executor uses as the body
               },
             },
-            auth: { serviceAuth: false, optional: false },
           },
         ],
       ]),
@@ -720,7 +718,6 @@ test.group('createXrpcExecutor — HTTP procedure path', (group) => {
               kind: 'function' as const,
               fn: (ctx: any) => ctx.response.redirect('https://cdn.example/blob/abc', 302),
             },
-            auth: { serviceAuth: false, optional: false },
           },
         ],
       ]),
@@ -754,7 +751,6 @@ test.group('createXrpcExecutor — HTTP procedure path', (group) => {
                 throw new Error('boom from handler')
               },
             },
-            auth: { serviceAuth: false, optional: false },
           },
         ],
       ]),
@@ -793,7 +789,6 @@ test.group('createXrpcExecutor — HTTP procedure path', (group) => {
                 throw new InvalidRequestError('reason unrecognized')
               },
             },
-            auth: { serviceAuth: false, optional: false },
           },
         ],
       ]),
@@ -883,7 +878,6 @@ test.group('createXrpcExecutor — HTTP procedure path', (group) => {
           {
             lexicon: PING_LEXICON as any,
             handler: { kind: 'function' as const, fn: () => ({ ok: true }) },
-            auth: { serviceAuth: false, optional: false },
           },
         ],
       ]),
@@ -991,7 +985,7 @@ async function* wrapSubscriptionIterator(
     // here. Falls through to `getRegisteredErrorHandler()` when the
     // subscription-specific handler isn't registered.
     throw new XRPCSubscriptionError({
-      kind: xrpcError.errorName,
+      error: xrpcError.errorName,
       message: xrpcError.message,
     })
   }
@@ -1006,7 +1000,7 @@ Append to `tests/xrpc_server.spec.ts`:
 
 ```ts
 test.group('createXrpcExecutor — subscription path', (group) => {
-  group.each.setup(() => setupApp({ environment: 'web' }))
+  group.each.setup(() => setupApp())
 
   const SUB_LEXICON = {
     id: 'com.example.stream',
@@ -1038,7 +1032,6 @@ test.group('createXrpcExecutor — subscription path', (group) => {
                 yield { $type: 'com.example.stream#tick', n: 3 }
               },
             },
-            auth: { serviceAuth: false, optional: false },
           },
         ],
       ]),
@@ -1089,7 +1082,6 @@ test.group('createXrpcExecutor — subscription path', (group) => {
                 }
               },
             },
-            auth: { serviceAuth: false, optional: false },
           },
         ],
       ]),
@@ -1135,7 +1127,6 @@ test.group('createXrpcExecutor — subscription path', (group) => {
                 throw new InvalidRequestError('cursor is from the future')
               },
             },
-            auth: { serviceAuth: false, optional: false },
           },
         ],
       ]),
@@ -1159,7 +1150,7 @@ test.group('createXrpcExecutor — subscription path', (group) => {
       assert.fail('iterable should have thrown')
     } catch (err: any) {
       assert.instanceOf(err, XRPCSubscriptionError)
-      assert.equal(err.kind, 'InvalidRequest') // mapped from XrpcError.errorName
+      assert.equal(err.error, 'InvalidRequest') // mapped from XrpcError.errorName
       assert.match(err.message, /cursor is from the future/)
     }
 
@@ -1171,7 +1162,7 @@ test.group('createXrpcExecutor — subscription path', (group) => {
 - [ ] **Step 3: Run tests to verify they pass**
 
 Run: `pnpm quick:test --files tests/xrpc_server.spec.ts`
-Expected: PASS — all tests from Tasks 2, 3, and now 4. Verify the `XRPCSubscriptionError` constructor signature matches what was used (`{ kind, message }`) — if atcute uses a different shape (`{ error, message }` was the older spec form), adjust both the import line and the throw site.
+Expected: PASS — all tests from Tasks 2, 3, and now 4. The `XRPCSubscriptionError` constructor signature is `{ error, message }` per the spec (and matches Plan 04's usage); the assertion above reads `err.error`. If atcute's source disagrees at implementation time, fix the throw + assertion together and update both this plan and Plan 04's matching call site.
 
 - [ ] **Step 4: Commit**
 
@@ -1275,7 +1266,7 @@ import { XrpcServer } from '../src/xrpc_server.js'
 import { XrpcRouter } from '../src/router.js'
 
 test.group('XrpcServer.#installRoutes', (group) => {
-  group.each.setup(() => setupApp({ environment: 'web' }))
+  group.each.setup(() => setupApp())
 
   test('refuses to install routes if the XrpcRouter builder is not committed', async ({
     assert,
@@ -1603,7 +1594,7 @@ import XrpcDispatchMiddleware from '../../src/middleware/dispatch.js'
 import { XrpcServer } from '../../src/xrpc_server.js'
 
 test.group('XrpcDispatchMiddleware', (group) => {
-  group.each.setup(() => setupApp({ environment: 'web' }))
+  group.each.setup(() => setupApp())
 
   test('passes through non-/xrpc/* requests untouched', async ({ assert, app }) => {
     const middleware = new XrpcDispatchMiddleware()
@@ -1831,7 +1822,6 @@ test.group('XrpcProvider', () => {
     assert,
   }) => {
     const { app } = await setupApp({
-      environment: 'web',
       rcFileContents: {
         providers: [() => import('../providers/provider.js')],
       },
@@ -1859,6 +1849,13 @@ test.group('XrpcProvider', () => {
   test('start() commits in all environments; ready() skips XrpcServer wiring in non-web envs', async ({
     assert,
   }) => {
+    // NOTE: this test needs `setupApp` to honor an `environment` option that
+    // gets passed through to `TestUtilsFactory` (which forwards to
+    // `ignitor.createApp(environment)`). The pre-existing `setupApp` signature
+    // only forwards `{ rcFileContents, config }` to `IgnitorFactory.merge`.
+    // Extend the fixture's signature here as part of this step (same shape
+    // as Plan 01 Task 8 Step 2's `nodeEnvironment` extension note — these
+    // are two distinct fixture knobs and both should land).
     const { app } = await setupApp({
       environment: 'console',
       rcFileContents: {
@@ -1941,7 +1938,7 @@ git commit -m "feat(xrpc): add minimal provider (router.xrpc + XrpcServer ready 
 
 - Create: `tests/dispatch.spec.ts`
 
-Real Adonis pipeline, real atcute dispatch. Bootstraps an app via `setupApp({ environment: 'web', rcFileContents.providers: [...] })` so Task 7b's minimal provider does the wiring (constructs the atcute `XRPCRouter` + `XrpcServer`, container-binds, commits the `XrpcRouter`, calls `start()`). Tests register XRPC routes in `beforeReady` via the provider-installed `router.xrpc` getter; setupApp's `app.start(cb)` block (extended in Task 7b Step 4) mounts the dispatch middleware in `server.use([...])`; and requests fire through `light-my-request`'s `inject(server.handle.bind(server))` — no port binding needed (same pattern Emelia uses in `fedimod/fires`'s `tests/plugins/request_tests.ts`). The HTTP path goes through the full Adonis pipeline; only the network socket is synthetic.
+Real Adonis pipeline, real atcute dispatch. Bootstraps an app via `setupApp({ rcFileContents: { providers: [...] } })` so Task 7b's minimal provider does the wiring (constructs the atcute `XRPCRouter` + `XrpcServer`, container-binds, commits the `XrpcRouter`, calls `start()`). Tests register XRPC routes in `beforeReady` via the provider-installed `router.xrpc` getter; setupApp's `app.start(cb)` block (extended in Task 7b Step 4) mounts the dispatch middleware in `server.use([...])`; and requests fire through `light-my-request`'s `inject(server.handle.bind(server))` — no port binding needed (same pattern Emelia uses in `fedimod/fires`'s `tests/plugins/request_tests.ts`). The HTTP path goes through the full Adonis pipeline; only the network socket is synthetic.
 
 **Test-layering rationale**: this is the test that exercises the **real `fromHttpContext`** path end-to-end. The dispatch middleware receives the live Adonis `HttpContext` as a parameter and calls `requestContextStore.run(fromHttpContext(ctx), () => xrpcRouter.fetch(...))`; the registered atcute closure then reads from `requestContextStore.getStore()` and threads it into the executor. The Task 3 unit tests exercise the executor with a factory-built `RequestContext` (via `fromHttpContext(new HttpContextFactory().create())`); this test exercises the same materialization helper against a real `HttpContext` produced by the Adonis pipeline.
 
@@ -1987,7 +1984,6 @@ const ECHO_QUERY = {
 test.group('dispatch — HTTP procedure + query end-to-end', (group) => {
   group.each.setup(async () => {
     const ctx = await setupApp({
-      environment: 'web',
       rcFileContents: {
         providers: [() => import('../providers/provider.js')],
       },
@@ -2558,7 +2554,6 @@ const STREAM = {
 test.group('dispatch — WebSocket subscription end-to-end', (group) => {
   group.each.setup(async () => {
     return setupApp({
-      environment: 'web',
       rcFileContents: {
         providers: [() => import('../providers/provider.js')],
       },
@@ -2670,7 +2665,7 @@ In `package.json`, extend the `exports` block:
 "exports": {
   ".": "./build/index.js",
   "./provider": "./build/providers/provider.js",
-  "./service": "./build/services/xrpc.js",
+  "./services/xrpc": "./build/services/xrpc.js",
   "./middleware": "./build/src/middleware/dispatch.js",
   "./test_utils": "./build/src/test_utils.js",
   "./event-stream/framing": "./build/src/event-stream/framing.js",
@@ -2773,7 +2768,7 @@ Run through this checklist before handing off:
   - `XrpcService` facade + error handler registration — out of scope, Plan 04 ✓
   - `HttpContext.xrpc` Macroable getter — out of scope, Plan 04 ✓
 
-- [ ] **Type consistency:** `SharedXrpcExecutor` signature is `(atcuteCtx, requestCtx?: RequestContext) => Promise<Response> | AsyncIterable<unknown>` — return covers both `Promise<Response>` (HTTP path — the executor constructs a `Response` from `xrpcCtx.response.state` + the serialized body; atcute's router checks `output instanceof Response` and silently drops non-Response returns) and `AsyncIterable<unknown>` (subscription path — atcute iterates for frame encoding). `RouteInfo` from Plan 01 carries the `auth: RouteAuthDecl` field as routing state — Plan 03's executor reads `RouteInfo` but neither consults nor modifies the `auth` field. `XrpcContext` construction sources `requestId` / `request: HttpRequest` (Adonis) / `logger` / `containerResolver` from `requestCtx`, and `lexicon` / `input` / `params` / `signal` from `route` + `atcuteCtx` — with no `auth` field on the context. After `xrpcCtx` is constructed, every subsequent read in the executor (and in `wrapSubscriptionIterator`) sources from `xrpcCtx`, not `requestCtx`.
+- [ ] **Type consistency:** `SharedXrpcExecutor` signature is `(atcuteCtx, requestCtx?: RequestContext) => Promise<Response> | AsyncIterable<unknown>` — return covers both `Promise<Response>` (HTTP path — the executor constructs a `Response` from `xrpcCtx.response.state` + the serialized body; atcute's router checks `output instanceof Response` and silently drops non-Response returns) and `AsyncIterable<unknown>` (subscription path — atcute iterates for frame encoding). `RouteInfo` from Plan 01 has no `auth` field (Plan 05 grafts it via declaration merging) — Plan 03's executor reads `RouteInfo` and is auth-agnostic. `XrpcContext` construction sources `requestId` / `request: HttpRequest` (Adonis) / `logger` / `containerResolver` from `requestCtx`, and `lexicon` / `input` / `params` / `signal` from `route` + `atcuteCtx` — with no `auth` field on the context. After `xrpcCtx` is constructed, every subsequent read in the executor (and in `wrapSubscriptionIterator`) sources from `xrpcCtx`, not `requestCtx`.
 
 - [ ] **Forward-compat seams for Plan 04:** Two explicit seams are documented in the code with comment-anchors:
   - `ERROR-REPORTING SEAM (Plan 04)` in `createXrpcExecutor`'s catch block and in `wrapSubscriptionIterator`'s catch block.

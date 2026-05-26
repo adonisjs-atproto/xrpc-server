@@ -2267,14 +2267,14 @@ In `package.json`, replace the existing `exports` block with:
 "exports": {
   ".": "./build/index.js",
   "./provider": "./build/providers/provider.js",
-  "./service": "./build/services/xrpc.js",
+  "./services/xrpc": "./build/services/xrpc.js",
   "./types": "./build/src/types.js",
   "./factories/xrpc": "./build/factories/xrpc.js",
   "./errors": "./build/src/errors.js"
 },
 ```
 
-Note: `./middleware`, `./test_utils`, and `./event-stream/framing` subpaths are added in Plan 03; `./services/xrpc` lands in Plan 04; `./hooks` lands in Plan 07. `XrpcSerializer` stays internal in v1 — no `./serializer` subpath ships (see Plan 02 § _Descoped from v1_ for the rationale). Keeping the export map honest is part of the contract.
+Note: `./services/xrpc` ships from here (the file is scaffolded in the initial commit; Plan 04 fills in the singleton accessor body). `./middleware`, `./test_utils`, and `./event-stream/framing` subpaths are added in Plan 03; `./hooks` lands in Plan 07. `XrpcSerializer` stays internal in v1 — no `./serializer` subpath ships (see Plan 02 § _Descoped from v1_ for the rationale). Keeping the export map honest is part of the contract.
 
 - [ ] **Step 3: Extend `tsdown.entry`**
 

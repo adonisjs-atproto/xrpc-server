@@ -10,7 +10,9 @@
 
 **Spec reference:** `docs/specs/2026-05-21-adonisjs-atproto-xrpc-design.md` § _Transformer integration_ — the canonical design this plan implements.
 
-**Depends on:** Plan 01 (foundation) — `src/types.ts` provides `XrpcLexicon` / `InferOutput`, `XrpcResponseBody` is the return-type shape this serializer ultimately produces. Plan 02 does NOT import from `src/router.ts` or `src/context.ts` — the serializer is dispatch-input-shape-agnostic.
+**Depends on:** Plan 01 (foundation) — `src/types.ts` provides `XrpcLexicon` / `InferOutput`. Plan 02 does NOT import from `src/router.ts` or `src/context.ts` — the serializer is dispatch-input-shape-agnostic.
+
+> _Spec-drift note (deferred): the spec describes a `XrpcResponseBody<L>` loose-union type (admitting transformer contracts: `Item`/`Collection`/`Paginator` wrapping `InferOutput<L>`); Plan 01 currently uses the tight `InferOutput<L>` directly on `XrpcResponse.body` and `json(value)`. This is a real divergence the serializer's contract-walking machinery papers over at runtime, but the type-level slot should likely be widened to match the spec. Tracking in `TODO.md` rather than blocking Plan 02._
 
 ---
 
@@ -137,7 +139,7 @@ class UserTransformer extends BaseTransformer<{ id: number; name: string }> {
 }
 
 test.group('XrpcSerializer', (group) => {
-  group.each.setup(() => setupApp({ environment: 'web' }))
+  group.each.setup(() => setupApp())
 
   test('wrap is undefined (XRPC has no envelope key)', ({ assert }) => {
     const serializer = new XrpcSerializer()

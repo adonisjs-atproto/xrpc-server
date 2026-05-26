@@ -32,6 +32,7 @@ import type { XrpcSerializer } from './serializer.js'
 import { XrpcContext } from './context.js'
 import { XrpcError, InternalServerError, NotFoundError } from './errors.js'
 import { type RequestContext, requestContextStore } from './request_context.js'
+import { type XrpcService, REPORTED } from './xrpc_service.js'
 
 // Forward type-only references to atcute. Imports stay type-only so this
 // module's *runtime* dependency surface is just the constructor names; the
@@ -248,9 +249,9 @@ export class XrpcServer {
 export function createXrpcExecutor(deps: {
   operations: ReadonlyMap<string, RouteInfo>
   serializer: XrpcSerializer
-  // ERROR-REPORTING SEAM (Plan 04): `xrpc: XrpcService` field added here.
+  xrpc: XrpcService
 }): SharedXrpcExecutor {
-  const { operations, serializer } = deps
+  const { operations, serializer, xrpc } = deps
 
   // NOTE: this is intentionally a non-async function. Subscription routes
   // need to return an `AsyncIterable<unknown>` *directly* — atcute's
@@ -332,7 +333,7 @@ export function createXrpcExecutor(deps: {
         xrpcCtx,
         () => invokeHandler(xrpcCtx) as AsyncIterable<unknown>
       )
-      return wrapSubscriptionIterator(userIterable, xrpcCtx, serializer)
+      return wrapSubscriptionIterator(userIterable, xrpcCtx, xrpc, serializer)
     }
 
     return XrpcContext.als.run(xrpcCtx, async () => {
@@ -365,16 +366,60 @@ export function createXrpcExecutor(deps: {
           headers: respState.headers,
         })
       } catch (err: any) {
-        const xrpcError =
-          err instanceof XrpcError ? err : new InternalServerError(err?.message ?? String(err))
-        // ERROR-REPORTING SEAM (Plan 04): call
-        //   `await xrpc.getRegisteredErrorHandler()?.report(err, xrpcCtx)`
-        // here (procedure/query path). The subscription branch in Task 4 has
-        // the mirror seam for `getRegisteredSubscriptionErrorHandler()`.
-        throw xrpcError
+        throw await runConsumerHandler(xrpc, err, xrpcCtx)
       }
     })
   }
+}
+
+/**
+ * Run the consumer's registered ExceptionHandler against an error. Used
+ * by both the procedure/query executor catch and the subscription wrapper
+ * catch — single source of truth for the report → handle → mark sequence.
+ *
+ * Returns the XrpcError the caller should throw. Stamps the `REPORTED`
+ * symbol so atcute's HTTP-path `handleException` hook (Plan 04 Task 4's
+ * `makeAtcuteHttpHook`) skips a duplicate handler invocation when the
+ * sanitized error bubbles up to atcute's exception handler.
+ *
+ * Fallback (no handler registered): wrap non-XrpcError as
+ * InternalServerError with `{ cause }` — preserves the Plan 03 default
+ * for tests and consumers who haven't wired `start/kernel.ts` yet.
+ */
+async function runConsumerHandler(
+  xrpc: XrpcService,
+  err: unknown,
+  xrpcCtx: XrpcContext<XrpcLexicon>
+): Promise<XrpcError> {
+  const handler = await xrpc.getRegisteredErrorHandler()
+
+  if (handler) {
+    // Reporting first — fire-and-forget for the wire response. A reporter
+    // that throws gets logged but doesn't mask the original error.
+    if (handler.shouldReport(err)) {
+      try {
+        await handler.report(err, xrpcCtx)
+      } catch (reportErr) {
+        xrpcCtx.logger.error(
+          { err: reportErr },
+          'XRPC ExceptionHandler.report() itself threw — proceeding with handle()'
+        )
+      }
+    }
+
+    // Sanitization — the returned XrpcError is what gets wire-encoded.
+    const sanitized = await handler.handle(err, xrpcCtx)
+    ;(sanitized as any)[REPORTED] = true
+    return sanitized
+  }
+
+  // No handler registered — fall back to the Plan 03 default wrap.
+  const fallback =
+    err instanceof XrpcError
+      ? err
+      : new InternalServerError(err instanceof Error ? err.message : String(err), { cause: err })
+  ;(fallback as any)[REPORTED] = true
+  return fallback
 }
 
 /**
@@ -397,6 +442,7 @@ export function createXrpcExecutor(deps: {
 async function* wrapSubscriptionIterator(
   iterable: AsyncIterable<unknown>,
   xrpcCtx: XrpcContext<XrpcLexicon>,
+  xrpc: XrpcService,
   serializer: XrpcSerializer
 ): AsyncGenerator<unknown> {
   // Only needs xrpcCtx — containerResolver (for serialization) and the full
@@ -416,14 +462,14 @@ async function* wrapSubscriptionIterator(
       yield await serializer.serializeWithoutWrapping(result.value, xrpcCtx.containerResolver)
     }
   } catch (err: any) {
-    const xrpcError =
-      err instanceof XrpcError
-        ? err
-        : new InternalServerError(err?.message ?? String(err), { cause: err })
-    // ERROR-REPORTING SEAM (Plan 04): call
-    //   `await xrpc.getRegisteredSubscriptionErrorHandler()?.report(err, xrpcCtx)`
-    // here. Falls through to `getRegisteredErrorHandler()` when the
-    // subscription-specific handler isn't registered.
+    const xrpcError = await runConsumerHandler(xrpc, err, xrpcCtx)
+
+    // Translate XrpcError → XRPCSubscriptionError. Atcute has no
+    // configurable subscription-error hook — it inspects the thrown value:
+    // XRPCSubscriptionError → emit error frame + close with err.closeCode;
+    // anything else → close 1011 + invoke onSocketError (telemetry-only).
+    // The sanitized XrpcError from runConsumerHandler carries the wire-
+    // shape `errorName` + `message` we want for the error frame.
     throw new XRPCSubscriptionError({
       error: xrpcError.errorName,
       message: xrpcError.message,

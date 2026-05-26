@@ -10,8 +10,10 @@ import {
 } from '../src/request_context.js'
 import { XrpcSerializer } from '../src/serializer.js'
 import { XrpcContext } from '../src/context.js'
-import { InvalidRequestError } from '../src/errors.js'
+import { InvalidRequestError, InternalServerError } from '../src/errors.js'
 import { XrpcRouter, type RouteInfo } from '../src/router/index.js'
+import { XrpcService, REPORTED } from '../src/xrpc_service.js'
+import { ExceptionHandler } from '../src/exception_handler.js'
 import { setupApp } from './helpers.js'
 
 // --- shared lexicons ------------------------------------------------------
@@ -21,11 +23,19 @@ const STREAM = { nsid: 'com.example.stream', type: 'xrpc_subscription' } as any
 
 // --- helpers --------------------------------------------------------------
 
+/**
+ * Stub XrpcService with no factory registered — getRegisteredErrorHandler()
+ * returns null, falling back to the Plan 03-style InternalServerError wrap.
+ * Used by tests that don't exercise error-reporting behavior.
+ */
+const noOpXrpc = new XrpcService({} as any)
+
 /** Build an executor with a single registered route. */
-function makeExecutor(lexicon: any, handler: RouteInfo['handler']) {
+function makeExecutor(lexicon: any, handler: RouteInfo['handler'], xrpc = noOpXrpc) {
   return createXrpcExecutor({
     operations: new Map([[lexicon.nsid, { lexicon, handler }]]),
     serializer: new XrpcSerializer(),
+    xrpc,
   })
 }
 
@@ -199,6 +209,7 @@ test.group('createXrpcExecutor — HTTP path', (group) => {
     const executor = createXrpcExecutor({
       operations: new Map(),
       serializer: new XrpcSerializer(),
+      xrpc: noOpXrpc,
     })
 
     try {
@@ -222,6 +233,7 @@ test.group('createXrpcExecutor — HTTP path', (group) => {
     const executor = createXrpcExecutor({
       operations: new Map(),
       serializer: new XrpcSerializer(),
+      xrpc: noOpXrpc,
     })
 
     try {
@@ -325,6 +337,167 @@ test.group('createXrpcExecutor — subscription path', (group) => {
     assert.equal((thrown as any).error, 'InvalidRequest')
     assert.match((thrown as any).message, /cursor is from the future/)
     assert.lengthOf(collected, 1)
+  })
+})
+
+// --- runConsumerHandler (error-reporting) --------------------------------
+
+test.group('createXrpcExecutor — error reporting', (group) => {
+  group.each.setup(async () => {
+    await setupApp()
+  })
+
+  test('procedure handler error: report() fires + handle()-returned XrpcError is thrown', async ({
+    assert,
+  }) => {
+    const { app } = await setupApp()
+
+    const reportCalls: unknown[] = []
+    const handleReturn = new InvalidRequestError('sanitized by handler')
+
+    class TestHandler extends ExceptionHandler {
+      override async report(err: unknown) {
+        reportCalls.push(err)
+      }
+      override async handle(_err: unknown) {
+        return handleReturn
+      }
+    }
+
+    const xrpc = new XrpcService(app)
+    xrpc.errorHandler(() => Promise.resolve({ default: TestHandler }))
+
+    const executor = makeExecutor(
+      PING,
+      { kind: 'function', fn: () => { throw new Error('raw error') } },
+      xrpc
+    )
+
+    try {
+      await executor(
+        atcuteHttpCtx('http://localhost/xrpc/com.example.ping', { method: 'POST' }),
+        makeRequestCtx()
+      )
+      assert.fail('executor should have thrown')
+    } catch (err: any) {
+      assert.strictEqual(err, handleReturn, 'thrown error is the one handle() returned')
+      assert.isTrue((err as any)[REPORTED], 'REPORTED symbol is stamped')
+      assert.lengthOf(reportCalls, 1, 'report() was called once')
+      assert.instanceOf(reportCalls[0], Error)
+      assert.match((reportCalls[0] as Error).message, /raw error/)
+    }
+  })
+
+  test('subscription handler error: report() fires + XRPCSubscriptionError wraps sanitized error', async ({
+    assert,
+  }) => {
+    const { XRPCSubscriptionError } = await import('@atcute/xrpc-server')
+    const { app } = await setupApp()
+
+    const reportCalls: unknown[] = []
+    const handleReturn = new InvalidRequestError('sanitized for subscription')
+
+    class TestHandler extends ExceptionHandler {
+      override async report(err: unknown) {
+        reportCalls.push(err)
+      }
+      override async handle(_err: unknown) {
+        return handleReturn
+      }
+    }
+
+    const xrpc = new XrpcService(app)
+    xrpc.errorHandler(() => Promise.resolve({ default: TestHandler }))
+
+    const executor = makeExecutor(
+      STREAM,
+      {
+        kind: 'function',
+        fn: async function* () {
+          yield { $type: 'com.example.stream#tick', n: 1 }
+          throw new Error('subscription exploded')
+        },
+      },
+      xrpc
+    )
+
+    const iterable = ensureAsyncIterable<any>(
+      await executor(atcuteSubCtx('http://localhost/xrpc/com.example.stream'), makeRequestCtx())
+    )
+    let thrown: unknown = null
+    try {
+      for await (const _msg of iterable) { /* drain */ }
+    } catch (err) {
+      thrown = err
+    }
+
+    assert.instanceOf(thrown, XRPCSubscriptionError)
+    assert.equal((thrown as any).error, handleReturn.errorName)
+    assert.match((thrown as any).message, /sanitized for subscription/)
+    assert.lengthOf(reportCalls, 1, 'report() was called once')
+    assert.instanceOf(reportCalls[0], Error)
+    assert.match((reportCalls[0] as Error).message, /subscription exploded/)
+  })
+
+  test('falls back to InternalServerError wrap when no handler is registered', async ({
+    assert,
+  }) => {
+    // noOpXrpc has no factory — getRegisteredErrorHandler() returns null.
+    const executor = makeExecutor(PING, {
+      kind: 'function',
+      fn: () => {
+        throw new Error('unhandled error')
+      },
+    })
+
+    try {
+      await executor(
+        atcuteHttpCtx('http://localhost/xrpc/com.example.ping', { method: 'POST' }),
+        makeRequestCtx()
+      )
+      assert.fail('executor should have thrown')
+    } catch (err: any) {
+      assert.instanceOf(err, InternalServerError)
+      assert.match(err.message, /unhandled error/)
+      assert.instanceOf(err.cause, Error)
+      assert.isTrue((err as any)[REPORTED])
+    }
+  })
+
+  test('reporter throw does not mask the sanitized error', async ({ assert }) => {
+    const { app } = await setupApp()
+
+    const handleReturn = new InvalidRequestError('sanitized despite reporter crash')
+
+    class ThrowingReporter extends ExceptionHandler {
+      override async report() {
+        throw new Error('Sentry network failure')
+      }
+      override async handle(_err: unknown) {
+        return handleReturn
+      }
+    }
+
+    const xrpc = new XrpcService(app)
+    xrpc.errorHandler(() => Promise.resolve({ default: ThrowingReporter }))
+
+    const executor = makeExecutor(
+      PING,
+      { kind: 'function', fn: () => { throw new Error('original error') } },
+      xrpc
+    )
+
+    try {
+      await executor(
+        atcuteHttpCtx('http://localhost/xrpc/com.example.ping', { method: 'POST' }),
+        makeRequestCtx()
+      )
+      assert.fail('executor should have thrown')
+    } catch (err: any) {
+      // The reporter's exception must NOT mask handle()'s return value.
+      assert.strictEqual(err, handleReturn)
+      assert.isTrue((err as any)[REPORTED])
+    }
   })
 })
 

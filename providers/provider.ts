@@ -7,6 +7,7 @@ import type { ContainerProviderContract } from '@adonisjs/application/types'
 import { XrpcRouter } from '../src/router/index.js'
 import { XrpcServer, createXrpcExecutor } from '../src/xrpc_server.js'
 import { XrpcSerializer } from '../src/serializer.js'
+import { XrpcService } from '../src/xrpc_service.js'
 
 declare module '@adonisjs/core/types' {
   export interface ContainerBindings {
@@ -100,11 +101,16 @@ export default class XrpcProvider implements ContainerProviderContract {
     // reference (the executor reads from it at dispatch time); commit just
     // sealed further registration.
     const xrpcRouter = await this.app.container.make('xrpcRouter')
+    // Task 3 interim: construct XrpcService directly. Task 4 replaces this
+    // with a container-singleton binding + resolution via make('xrpc'), and
+    // adds atcute's handleException / onSocketError hook wiring.
+    const xrpc = new XrpcService(this.app)
     const ws = createNodeWebSocket()
     const atcuteRouter = new XRPCRouter({ websocket: ws.adapter })
     const executor = createXrpcExecutor({
       operations: xrpcRouter.operations,
       serializer: new XrpcSerializer(),
+      xrpc,
     })
     const xrpcServer = new XrpcServer({
       app: this.app,

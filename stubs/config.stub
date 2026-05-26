@@ -5,5 +5,5 @@ import { defineConfig } from '@thisismissem/adonisjs-atproto-xrpc'
 import env from '#start/env'
 
 export default defineConfig({
-
+  serviceDid: env.get('ATPROTO_SERVICE_DID'),
 })

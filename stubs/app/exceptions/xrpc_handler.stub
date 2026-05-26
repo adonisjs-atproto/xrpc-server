@@ -1,0 +1,31 @@
+{{{
+  exports({ to: app.makePath('app/exceptions/xrpc_handler.ts') })
+}}}
+import { ExceptionHandler } from '@thisismissem/adonisjs-atproto-xrpc'
+import type { XrpcContext, XrpcLexicon, XrpcError } from '@thisismissem/adonisjs-atproto-xrpc'
+
+/**
+ * XRPC exception handler. The base class ships sensible defaults:
+ *
+ *   - report()       no-op (no observability integration assumed). Add
+ *                    your Sentry / structured logging call here.
+ *   - handle()       sanitizes unexpected errors to InternalServerError
+ *                    in production so internal messages / stack traces
+ *                    don't leak to clients; preserves the cause in dev.
+ *   - shouldReport() returns true for every error; override to suppress.
+ *
+ * Both report and handle here just delegate to super — modify their
+ * bodies to add custom behavior.
+ *
+ * Note: backticks are avoided in this comment because the configure
+ * stub renderer (tempura) wraps stub content in template literals.
+ */
+export default class XrpcExceptionHandler extends ExceptionHandler {
+  async report(error: unknown, ctx: XrpcContext<XrpcLexicon> | null) {
+    return super.report(error, ctx)
+  }
+
+  async handle(error: unknown, ctx: XrpcContext<XrpcLexicon> | null): Promise<XrpcError> {
+    return super.handle(error, ctx)
+  }
+}

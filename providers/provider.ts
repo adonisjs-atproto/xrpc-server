@@ -158,8 +158,14 @@ export default class XrpcProvider implements ContainerProviderContract {
 
 /**
  * Build the atcute `handleException` hook (HTTP path). Runs the consumer's
- * registered ExceptionHandler against the error and throws the sanitized
- * XrpcError for atcute's wire encoder to produce the response body.
+ * registered ExceptionHandler against the error and returns the sanitized
+ * error as an XRPC JSON Response for atcute's wire encoder.
+ *
+ * **Contract**: atcute's `handleException` callback must RETURN a Response —
+ * it is not a throw-or-never hook. If it throws, the exception escapes
+ * `#dispatch`'s catch block and propagates out of `router.fetch()` entirely,
+ * bypassing atcute's JSON encoding (and landing in AdonisJS's plain-text
+ * exception handler). Every code path below returns a Response.
  *
  * **Dedup** (REPORTED symbol): handler-side errors enter the executor's
  * catch FIRST (Task 3's `runConsumerHandler`). The executor calls
@@ -176,9 +182,11 @@ export default class XrpcProvider implements ContainerProviderContract {
  * `get()` returns undefined and we pass null to the consumer's handler.
  */
 function makeAtcuteHttpHook(xrpc: XrpcService) {
-  return async (err: unknown): Promise<never> => {
-    if ((err as any)?.[REPORTED]) {
-      throw err
+  return async (err: unknown): Promise<Response> => {
+    // REPORTED: already processed by runConsumerHandler in the executor.
+    // Encode directly — no re-reporting, no double-handling.
+    if ((err as any)?.[REPORTED] && err instanceof XrpcError) {
+      return xrpcErrorToResponse(err)
     }
 
     const handler = await xrpc.getRegisteredErrorHandler()
@@ -192,8 +200,7 @@ function makeAtcuteHttpHook(xrpc: XrpcService) {
           : new InternalServerError(err instanceof Error ? err.message : String(err), {
               cause: err,
             })
-      ;(fallback as any)[REPORTED] = true
-      throw fallback
+      return xrpcErrorToResponse(fallback)
     }
 
     const xrpcCtx = XrpcContext.get() ?? null
@@ -203,14 +210,23 @@ function makeAtcuteHttpHook(xrpc: XrpcService) {
         await handler.report(err, xrpcCtx)
       } catch {
         // Swallow reporter failures so the original error still gets
-        // sanitized and re-thrown for atcute to encode.
+        // sanitized and encoded for atcute to return.
       }
     }
 
     const sanitized = await handler.handle(err, xrpcCtx)
     ;(sanitized as any)[REPORTED] = true
-    throw sanitized
+    return xrpcErrorToResponse(sanitized)
   }
+}
+
+/**
+ * Encode an XrpcError to the XRPC wire JSON Response format.
+ * `err.status` comes from `@poppinss/exception`'s constructor copying the
+ * subclass static `status` field to the instance.
+ */
+function xrpcErrorToResponse(err: XrpcError): Response {
+  return Response.json({ error: err.errorName, message: err.message }, { status: err.status })
 }
 
 /**

@@ -3,6 +3,24 @@
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 >
 > **Model:** Claude Sonnet (current generation) — the design and audit work is settled in the spec and plans; execution is mechanical enough that Opus is overkill.
+>
+> **⚠ Before executing — check `@atcute/xrpc-server-node` version.**
+>
+> This plan was written against `@atcute/xrpc-server-node@2.0.0`, where `injectWebSocket`'s upgrade listener was unfriendly to other listeners — it 404'd every non-XRPC upgrade, clobbering Vite HMR and app-defined WS endpoints. Task 6's `#installWebSocketHandler` works around that with a **snip-and-wrap** dance (capture atcute's listener, remove it, re-register a URL-filtering wrapper around it).
+>
+> mary-ext/atcute commit [`4c66188`](https://github.com/mary-ext/atcute/commit/4c66188171ec68d6cf7590c1b8bcea60486106b7) (2026-05-26, "fix(xrpc-server-node): skip non-xrpc upgrades in injectWebSocket") fixes this upstream: the listener now bails silently for non-`/xrpc/` paths. The fix will ship in a release after `2.0.0`.
+>
+> **Run** `pnpm view @atcute/xrpc-server-node version` (or `pnpm info`). If a release `> 2.0.0` is available:
+>
+> 1. **Bump** the dep: `pnpm add @atcute/xrpc-server-node@latest` (the existing `^2.0.0` caret auto-picks).
+> 2. **Rewrite Task 6** (`#installWebSocketHandler`) to the **sibling-listener** design instead of snip-and-wrap:
+>    - **Drop**: the `beforeCount` snapshot + `removeListener` + `(atcuteListener as any)` cast + the runtime listener-count guard + the `await atcuteListener(req, socket, head)` call + the "Brittleness vs. previous design" paragraph + the "TODO (upstream)" about `urlPredicate` (mary fixed it differently but at the same effective level).
+>    - **Keep**: the URL-prefix filter (defense in depth even though atcute now bails for us), `appServer.createRequest(req, synthRes)` + RequestContext materialization, the `enterWith` choice and rationale, the concurrent-upgrade safety analysis.
+>    - **Reorder**: register our listener with `nodeServer.on('upgrade', ...)` **BEFORE** calling `this.#ws.injectWebSocket(nodeServer, this.#router)`, so ours fires first in the emit chain. atcute's listener fires next in the same emit-resource and inherits our ALS state via async-hooks.
+> 3. **Update Task 6 intro** to drop the "atcute's listener doesn't filter" framing — that's no longer true. The new framing: we register first so atcute's listener (firing second, in the same synchronous emit-iteration) sees our ALS state when it awaits `router.fetch`.
+> 4. **Update the concurrent-upgrade safety paragraph** (the long one in Task 6 intro): the analysis still applies, but the trigger is now "two emit-A and emit-B in same tick, each pair = our enterWith sibling + atcute's async sibling" instead of "our single wrapping listener awaiting atcute's captured listener". Empirical confirmation: `~/tmp/sibling-listener-spike/index.mjs` (see also memory: `atcute-xrpc-server-node-upgrade-fix`).
+>
+> If `@atcute/xrpc-server-node@2.0.0` is still latest at execution time: **execute the plan as written**. The snip-and-wrap design is correct and tested under that version; don't switch designs ahead of an actual release.
 
 **Goal:** Ship the dispatch layer — the shared executor that drives every registered XRPC handler, `XrpcServer` that owns the `@atcute/xrpc-server` `XRPCRouter` + WebSocket adapter, and `XrpcDispatchMiddleware` that intercepts `/xrpc/*` HTTP requests. After this plan, a hand-constructed `XrpcRouter` + `XrpcServer` pair can dispatch real HTTP procedures, HTTP queries, and WebSocket subscriptions end-to-end — without provider lifecycle and without error-reporter integration. Plan 04 (provider) layers those on top by splicing into the single error-reporting seam left here.
 

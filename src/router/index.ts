@@ -7,39 +7,20 @@ import type {
   XrpcProcedureLexicon,
   XrpcQueryLexicon,
   XrpcSubscriptionLexicon,
-} from './types.js'
+} from '../types.ts'
+import type {
+  AnyConstructor,
+  AnyLazyImport,
+  NormalizedHandler,
+  RouteInfo,
+  XrpcHandlerInput,
+} from './types.ts'
+import { XrpcRoute } from './route.ts'
+import { XrpcRouteGroup } from './group.ts'
 
-// Inline minimal aliases for types that live in transitive deps not exposed
-// under nodenext resolution from our direct dep set.
-type AnyConstructor = new (...args: any[]) => any
-type AnyLazyImport = () => Promise<{ default: AnyConstructor }>
-
-export type XrpcHandlerInput = ((ctx: any) => any) | [AnyLazyImport | AnyConstructor, string?]
-
-export type NormalizedHandler =
-  | { kind: 'function'; fn: (ctx: any) => any }
-  | {
-      kind: 'controller'
-      name: string
-      handle: (resolver: any, ctx: any) => Promise<unknown>
-    }
-
-export interface RouteInfo {
-  lexicon: XrpcLexicon
-  handler: NormalizedHandler
-}
-
-export class XrpcRoute extends Macroable {
-  constructor(public nsid: string) {
-    super()
-  }
-}
-
-export class XrpcRouteGroup extends Macroable {
-  constructor(public routes: XrpcRoute[]) {
-    super()
-  }
-}
+export { XrpcRoute } from './route.ts'
+export { XrpcRouteGroup } from './group.ts'
+export type { XrpcHandlerInput, NormalizedHandler, RouteInfo } from './types.ts'
 
 // Distinguish eager class constructor from lazy-import arrow. ES6 class
 // declarations stringify as `class …`; arrows / plain functions don't.

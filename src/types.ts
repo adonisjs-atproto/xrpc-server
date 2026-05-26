@@ -124,7 +124,7 @@ export type XrpcConfig = XrpcProviderConfig
 // each `router.xrpc` consumer to add a side-effect import of the provider
 // just to satisfy the typechecker. The runtime install happens in the
 // provider's `boot()` (see Plan 03/04); this declaration is type-only.
-import type { XrpcRouter } from './router.js'
+import type { XrpcRouter } from './router/index.ts'
 
 declare module '@adonisjs/core/http' {
   interface Router {

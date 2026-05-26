@@ -25,9 +25,7 @@ test.group('XrpcDispatchMiddleware', (group) => {
     assert.isTrue(nextCalled, 'next() should have been called for non-xrpc paths')
   })
 
-  test('throws RuntimeException if no XrpcServer is bound on /xrpc/* paths', async ({
-    assert,
-  }) => {
+  test('throws RuntimeException if no XrpcServer is bound on /xrpc/* paths', async ({ assert }) => {
     const middleware = new XrpcDispatchMiddleware()
     const ctx = {
       request: { url: () => '/xrpc/com.example.ping' },

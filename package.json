@@ -75,10 +75,12 @@
     "@poppinss/ts-exec": "^1.4.4",
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^25.3.5",
+    "@types/ws": "^8.18.1",
     "better-sqlite3": "^12.9.0",
     "c8": "^11.0.0",
     "copyfiles": "^2.4.1",
     "eslint": "^10.0.3",
+    "light-my-request": "^6.6.0",
     "prettier": "^3.8.1",
     "tsdown": "^0.21.0",
     "typescript": "^5.4.5",
@@ -144,10 +146,13 @@
     ]
   },
   "dependencies": {
+    "@atcute/cbor": "^2.3.3",
     "@atcute/lexicons": "^2.0.0",
     "@atcute/xrpc-server": "^2.0.0",
     "@atcute/xrpc-server-node": "^2.0.0",
     "@poppinss/exception": "^1.2.3",
-    "@poppinss/macroable": "^1.1.2"
+    "@poppinss/macroable": "^1.1.2",
+    "light-my-websocket": "^0.0.3",
+    "ws": "^8.21.0"
   }
 }

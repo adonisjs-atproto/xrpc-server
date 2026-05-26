@@ -107,6 +107,8 @@
       "./src/router.ts",
       "./src/serializer.ts",
       "./src/context.ts",
+      "./src/response.ts",
+      "./src/stream.ts",
       "./src/exception_handler.ts",
       "./src/errors.ts",
       "./src/utils.ts",

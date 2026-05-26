@@ -1,6 +1,8 @@
 import { test } from '@japa/runner'
 import { XrpcContextFactory } from '../factories/xrpc.js'
-import { XrpcContext, XrpcResponse, XrpcStream } from '../src/context.js'
+import { XrpcContext } from '../src/context.js'
+import { XrpcResponse } from '../src/response.js'
+import { XrpcStream } from '../src/stream.js'
 
 const procedureLex = { nsid: 'com.example.test.proc', type: 'xrpc_procedure' } as any
 const subscriptionLex = { nsid: 'com.example.test.sub', type: 'xrpc_subscription' } as any

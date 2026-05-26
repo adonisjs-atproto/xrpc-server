@@ -12,7 +12,9 @@ export { defineConfig } from './src/define_config.js'
 export { XrpcRouter, XrpcRoute, XrpcRouteGroup } from './src/router.js'
 
 // Runtime context types
-export { XrpcContext, XrpcResponse, XrpcStream } from './src/context.js'
+export { XrpcContext } from './src/context.js'
+export { XrpcResponse } from './src/response.js'
+export { XrpcStream } from './src/stream.js'
 
 // Exception handler base class (consumer's app/exceptions/xrpc_handler.ts extends this)
 export { ExceptionHandler } from './src/exception_handler.js'

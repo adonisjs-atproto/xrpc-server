@@ -294,7 +294,7 @@ export function fromHttpContext(httpCtx: HttpContext): RequestContext {
 import type http from 'node:http'
 import { ServerResponse, type IncomingMessage } from 'node:http'
 import type { Duplex } from 'node:stream'
-import { RuntimeException } from '@poppinss/utils'
+import { RuntimeException } from '@adonisjs/core/exceptions'
 import type { ApplicationService } from '@adonisjs/core/types'
 import type { Server as AdonisServer } from '@adonisjs/core/services/server'
 
@@ -1542,7 +1542,7 @@ Server-level middleware mounted in `start/kernel.ts`'s `server.use([...])` chain
 Create `src/middleware/dispatch.ts`:
 
 ```ts
-import { RuntimeException } from '@poppinss/utils'
+import { RuntimeException } from '@adonisjs/core/exceptions'
 import type { HttpContext } from '@adonisjs/core/http'
 import type { NextFn } from '@adonisjs/core/types/http'
 

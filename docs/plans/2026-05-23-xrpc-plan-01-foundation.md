@@ -767,7 +767,8 @@ Create `src/router.ts`:
 
 ```ts
 import Macroable from '@poppinss/macroable'
-import { moduleCaller, moduleImporter, type ContainerResolver } from '@adonisjs/core/container'
+import { moduleCaller, moduleImporter } from '@adonisjs/core/container'
+import type { ContainerResolver } from '@adonisjs/core/types/container'
 import { RuntimeException } from '@adonisjs/core/exceptions'
 import type { ApplicationService } from '@adonisjs/core/types'
 import type { Constructor, LazyImport } from '@poppinss/utils/types'
@@ -1420,7 +1421,7 @@ import { AsyncLocalStorage } from 'node:async_hooks'
 import Macroable from '@poppinss/macroable'
 import { RuntimeException } from '@adonisjs/core/exceptions'
 import type { HttpRequest, Logger } from '@adonisjs/core/http'
-import type { ContainerResolver } from '@adonisjs/core/container'
+import type { ContainerResolver } from '@adonisjs/core/types/container'
 import type {
   InferInput,
   InferOutput,
@@ -2074,7 +2075,7 @@ Create `factories/xrpc.ts`:
 ```ts
 import { HttpContextFactory } from '@adonisjs/core/factories/http'
 import type { HttpRequest, Logger } from '@adonisjs/core/http'
-import type { ContainerResolver } from '@adonisjs/core/container'
+import type { ContainerResolver } from '@adonisjs/core/types/container'
 import { XrpcContext } from '../src/context.js'
 import type { XrpcLexicon, InferInput, InferParams } from '../src/types.js'
 
@@ -2280,7 +2281,7 @@ In `package.json`, replace the existing `exports` block with:
 },
 ```
 
-Note: `./serializer` (Plan 02), `./middleware`, `./services/xrpc`, and `./hooks` subpaths are added in later plans when their target files exist. Keeping the export map honest is part of the contract.
+Note: `./middleware`, `./test_utils`, and `./event-stream/framing` subpaths are added in Plan 03; `./services/xrpc` lands in Plan 04; `./hooks` lands in Plan 07. `XrpcSerializer` stays internal in v1 — no `./serializer` subpath ships (see Plan 02 § _Descoped from v1_ for the rationale). Keeping the export map honest is part of the contract.
 
 - [ ] **Step 3: Extend `tsdown.entry`**
 

@@ -48,6 +48,8 @@
 - `commands/list_xrpc_routes.ts`, `commands/make_xrpc_controller.ts` → Plan 06
 - `hooks/index_xrpc.ts` → Plan 07
 
+Plans 05-07 are deferred to a separate spec + planning cycle once we have the basic integration working.
+
 ---
 
 ## Pre-flight checks
@@ -1880,10 +1882,7 @@ export class ExceptionHandler {
    * executor materializes an `XrpcContext` (request parsing failures,
    * etc.) — guard with `ctx?.lexicon.id` etc.
    */
-  async report(
-    _error: unknown,
-    _ctx: XrpcContext<XrpcLexicon> | null
-  ): Promise<void> {
+  async report(_error: unknown, _ctx: XrpcContext<XrpcLexicon> | null): Promise<void> {
     // No-op by default.
   }
 
@@ -1901,18 +1900,14 @@ export class ExceptionHandler {
    * Override to customize sanitization. Call `super.handle(error, ctx)`
    * to keep the env-aware default behavior and layer custom logic on top.
    */
-  async handle(
-    error: unknown,
-    _ctx: XrpcContext<XrpcLexicon> | null
-  ): Promise<XrpcError> {
+  async handle(error: unknown, _ctx: XrpcContext<XrpcLexicon> | null): Promise<XrpcError> {
     if (error instanceof XrpcError) return error
     if (this.app.inProduction) {
       return new InternalServerError('Internal Server Error')
     }
-    return new InternalServerError(
-      error instanceof Error ? error.message : String(error),
-      { cause: error }
-    )
+    return new InternalServerError(error instanceof Error ? error.message : String(error), {
+      cause: error,
+    })
   }
 }
 ```
@@ -1984,9 +1979,7 @@ test.group('ExceptionHandler — defaults', () => {
     }
   })
 
-  test('handle wraps non-Error throwables (strings, plain objects) safely', async ({
-    assert,
-  }) => {
+  test('handle wraps non-Error throwables (strings, plain objects) safely', async ({ assert }) => {
     const { app } = await setupApp({})
     const handler = new ExceptionHandler(app)
 

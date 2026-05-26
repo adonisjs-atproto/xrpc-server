@@ -186,31 +186,31 @@ export class XrpcServer {
     // explicit escape. `(ProcedureConfig<any> | QueryConfig<any>)['handler']`
     // resolves to a *function type* (not a context type) and doesn't cover
     // subscriptions, so it's not a useful annotation here.
-    const handler = (atcuteCtx: any) => this.#executor(atcuteCtx, requestContextStore.getStore())
+    const handler = (atcuteCtx: any): any => {
+      return this.#executor(atcuteCtx, requestContextStore.getStore())
+    }
 
     // Atcute's add* methods type the handler per route kind (Response for
     // procedure/query; AsyncIterable for subscription) — our shared closure
     // returns the union of both. Cast at the call sites; runtime dispatch
     // selects the correct branch via `lexicon.type` inside the executor.
     for (const route of xrpc.operations.values()) {
-      switch (route.lexicon.type) {
+      const type = route.lexicon.type
+      switch (type) {
         case 'xrpc_procedure':
-          this.#router.addProcedure(route.lexicon as any, { handler: handler as any })
+          this.#router.addProcedure(route.lexicon, { handler })
           break
         case 'xrpc_query':
-          this.#router.addQuery(route.lexicon as any, { handler: handler as any })
+          this.#router.addQuery(route.lexicon, { handler })
           break
         case 'xrpc_subscription':
-          this.#router.addSubscription(route.lexicon as any, { handler: handler as any })
+          this.#router.addSubscription(route.lexicon, { handler })
           break
         default: {
           // Exhaustiveness — if the lexicon shape adds a new method type
           // (unlikely; the spec hasn't changed in years), this surfaces a
           // type error at compile time so we catch it before runtime.
-          const exhaustive: never = route.lexicon as never
-          throw new InternalServerError(
-            `Unhandled XRPC lexicon type at install: ${String((exhaustive as any).type)}`
-          )
+          throw new InternalServerError(`Unhandled XRPC lexicon type at install: ${String(type)}`)
         }
       }
     }

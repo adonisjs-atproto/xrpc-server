@@ -2,6 +2,7 @@ import { Router } from '@adonisjs/core/http'
 import { XRPCRouter } from '@atcute/xrpc-server'
 import { createNodeWebSocket } from '@atcute/xrpc-server-node'
 import type { ApplicationService } from '@adonisjs/core/types'
+import type { ContainerProviderContract } from '@adonisjs/application/types'
 
 import { XrpcRouter } from '../src/router/index.js'
 import { XrpcServer, createXrpcExecutor } from '../src/xrpc_server.js'
@@ -40,7 +41,7 @@ declare module '@adonisjs/core/types' {
  * expands this with `XrpcService` facade, error-reporter registration,
  * and atcute's handleException / handleSubscriptionException wiring.
  */
-export default class XrpcProvider {
+export default class XrpcProvider implements ContainerProviderContract {
   constructor(protected app: ApplicationService) {}
 
   register() {

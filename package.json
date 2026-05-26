@@ -63,6 +63,7 @@
     "url": "https://github.com/ThisIsMissEm/adonisjs-atproto-xrpc"
   },
   "devDependencies": {
+    "@adonisjs/application": "^9.0.0",
     "@adonisjs/assembler": "^8.0.0",
     "@adonisjs/core": "^7.0.1",
     "@adonisjs/eslint-config": "3.0.0",
@@ -91,7 +92,8 @@
   },
   "peerDependencies": {
     "@adonisjs/assembler": "^8.0.0",
-    "@adonisjs/core": "^7.0.1"
+    "@adonisjs/core": "^7.0.1",
+    "@adonisjs/application": "^9.0.0"
   },
   "peerDependenciesMeta": {
     "@adonisjs/assembler": {
@@ -160,7 +162,7 @@
     "@atcute/xrpc-server-node": "^2.0.0",
     "@poppinss/exception": "^1.2.3",
     "@poppinss/macroable": "^1.1.2",
-    "light-my-websocket": "^0.0.3",
+    "light-my-websocket": "file:.yalc/light-my-websocket",
     "ws": "^8.21.0"
   }
 }

@@ -27,12 +27,15 @@ importers:
         specifier: ^1.1.2
         version: 1.1.2
       light-my-websocket:
-        specifier: ^0.0.3
-        version: 0.0.3(ws@8.21.0)
+        specifier: file:.yalc/light-my-websocket
+        version: file:.yalc/light-my-websocket(ws@8.21.0)
       ws:
         specifier: ^8.21.0
         version: 8.21.0
     devDependencies:
+      '@adonisjs/application':
+        specifier: ^9.0.0
+        version: 9.0.0(@adonisjs/assembler@8.0.0(typescript@5.9.3))(@adonisjs/config@6.1.0)(@adonisjs/fold@11.0.0)
       '@adonisjs/assembler':
         specifier: ^8.0.0
         version: 8.0.0(typescript@5.9.3)
@@ -2144,8 +2147,8 @@ packages:
   light-my-request@6.6.0:
     resolution: {integrity: sha512-CHYbu8RtboSIoVsHZ6Ye4cj4Aw/yg2oAFimlF7mNvfDV192LR7nDiKtSIfCuLT7KokPSTn/9kfVLm5OGN0A28A==}
 
-  light-my-websocket@0.0.3:
-    resolution: {integrity: sha512-M5s6P4OuqoFHPBFDkSMkO49LMZ9N2YOLliSK3SyqJWCMSSIXxHJA//YHvfjnvSYZeVc9zgm5D7I4o4efyL8JnA==}
+  light-my-websocket@file:.yalc/light-my-websocket:
+    resolution: {directory: .yalc/light-my-websocket, type: directory}
     engines: {node: '>=22.6'}
     peerDependencies:
       ws: ^8.21.0
@@ -5268,7 +5271,7 @@ snapshots:
       process-warning: 4.0.1
       set-cookie-parser: 2.7.2
 
-  light-my-websocket@0.0.3(ws@8.21.0):
+  light-my-websocket@file:.yalc/light-my-websocket(ws@8.21.0):
     dependencies:
       ws: 8.21.0
 

@@ -16,8 +16,10 @@
   "exports": {
     ".": "./build/index.js",
     "./provider": "./build/providers/provider.js",
-    "./service": "./build/services/xrpc.js",
-    "./types": "./build/src/types.js"
+    "./services/xrpc": "./build/services/xrpc.js",
+    "./types": "./build/src/types.js",
+    "./factories/xrpc": "./build/factories/xrpc.js",
+    "./errors": "./build/src/errors.js"
   },
   "scripts": {
     "changeset": "changeset",
@@ -101,7 +103,13 @@
       "./configure.ts",
       "./providers/provider.ts",
       "./services/xrpc.ts",
-      "./src/types.ts"
+      "./src/types.ts",
+      "./src/router.ts",
+      "./src/context.ts",
+      "./src/exception_handler.ts",
+      "./src/errors.ts",
+      "./src/utils.ts",
+      "./factories/xrpc.ts"
     ],
     "outDir": "./build",
     "clean": true,

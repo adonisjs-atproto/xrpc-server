@@ -122,7 +122,7 @@ These verifications must pass before executing this plan. Don't run task subagen
 
 **Test discipline note**: TDD's RED step is skipped — the failure modes for these steps would be "module not found" or "method not defined", both trivially predictable per the user's memory note. Implementation → tests → verify pass.
 
-- [ ] **Step 1: Implement `src/xrpc_service.ts`**
+- [x] **Step 1: Implement `src/xrpc_service.ts`**
 
 ````ts
 import type { ApplicationService } from '@adonisjs/core/types'
@@ -218,7 +218,7 @@ Implementation notes:
 - The `LazyImport<{ default: new (...args: any[]) => ExceptionHandler }>` type intentionally mirrors `@poppinss/utils`'s `LazyImport` shape. `LazyImport` is type-only.
 - The `REPORTED` symbol export lives on this module (not on the provider) because it's a service-level concern: the executor (`src/xrpc_server.ts`) and atcute hooks (`providers/provider.ts`) both import it from here. Centralizing the marker on `XrpcService`'s module keeps the dedup contract obvious.
 
-- [ ] **Step 2: Write tests** for `XrpcService`'s factory storage, lazy resolution, and memoization behavior.
+- [x] **Step 2: Write tests** for `XrpcService`'s factory storage, lazy resolution, and memoization behavior.
 
 Create `tests/xrpc_service.spec.ts`:
 
@@ -280,13 +280,13 @@ test.group('XrpcService', () => {
 })
 ```
 
-- [ ] **Step 3: Run tests to verify pass**
+- [x] **Step 3: Run tests to verify pass**
 
 Run: `pnpm quick:test --files tests/xrpc_service.spec.ts`
 
 Expected: all 3 tests pass.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add src/xrpc_service.ts tests/xrpc_service.spec.ts

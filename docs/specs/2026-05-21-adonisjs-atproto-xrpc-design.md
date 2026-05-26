@@ -223,7 +223,7 @@ declare module '@adonisjs/core/http' {
 
 The type-only circular reference (`types.ts` ↔ `router.ts`) is fine because both sides use `import type` for their cross-references — TypeScript resolves these at type-check time only, no runtime cycle.
 
-`XrpcRouter` exposes the typed declaration API. The handler shapes mirror Adonis's own router types (`get` / `post` / etc.) — accepting either an inline function or a `[Controller | LazyImport<Controller>, methodName?]` tuple, with a `GetXrpcControllerHandlers` helper that narrows method names to those accepting `XrpcContext<L>` as the first parameter:
+`XrpcRouter` exposes the typed declaration API. The handler shapes mirror Adonis's own router types (`get` / `post` / etc.) — accepting either an inline function or a `[Controller | LazyImport<Controller>, methodName?]` tuple. v1 ships the method-name slot as a loose `string?`; the `GetXrpcControllerHandlers` helper sketched below narrows it to those accepting `XrpcContext<L>` as the first parameter and is **deferred to pre-release** (tracked in `TODO.md`). Tightening `string?` to the narrowed mapped type later is non-breaking:
 
 ```ts
 import type { Constructor, LazyImport } from '@poppinss/utils/types'
@@ -232,7 +232,10 @@ import type { Constructor, LazyImport } from '@poppinss/utils/types'
 type XrpcRouteFn<L> = (ctx: XrpcContext<L>) => XrpcHandlerReturn<L>
 type XrpcSubscriptionFn<L> = (ctx: XrpcContext<L>) => AsyncIterable<XrpcMessage<L>>
 
-// Narrows a controller's method names to those whose first parameter is XrpcContext<L>:
+// Narrows a controller's method names to those whose first parameter is XrpcContext<L>.
+// DEFERRED to pre-release — tracked in TODO.md. v1's procedure / query / subscription
+// signatures leave the method-name tuple element as `string?`; this helper is the
+// target shape for the later tightening.
 type GetXrpcControllerHandlers<Controller extends Constructor<any>, L> = {
   [K in keyof InstanceType<Controller>]: InstanceType<Controller>[K] extends (
     ctx: XrpcContext<L>,
@@ -288,19 +291,22 @@ class XrpcRouter extends Macroable {
     super()
   }
 
-  procedure<L extends XrpcProcedureLexicon, T extends Constructor<any>>(
+  // v1: method-name slot is `string?`. Pre-release work (see TODO.md) restores
+  // the `T extends Constructor<any>` second generic + `GetXrpcControllerHandlers<T, L>`
+  // narrowing on the tuple element. Loose-to-narrow tightening is non-breaking.
+  procedure<L extends XrpcProcedureLexicon>(
     lexicon: L,
-    handler: XrpcRouteFn<L> | [LazyImport<T> | T, GetXrpcControllerHandlers<T, L>?]
+    handler: XrpcRouteFn<L> | [LazyImport<Constructor<any>> | Constructor<any>, string?]
   ): XrpcRoute
 
-  query<L extends XrpcQueryLexicon, T extends Constructor<any>>(
+  query<L extends XrpcQueryLexicon>(
     lexicon: L,
-    handler: XrpcRouteFn<L> | [LazyImport<T> | T, GetXrpcControllerHandlers<T, L>?]
+    handler: XrpcRouteFn<L> | [LazyImport<Constructor<any>> | Constructor<any>, string?]
   ): XrpcRoute
 
-  subscription<L extends XrpcSubscriptionLexicon, T extends Constructor<any>>(
+  subscription<L extends XrpcSubscriptionLexicon>(
     lexicon: L,
-    handler: XrpcSubscriptionFn<L> | [LazyImport<T> | T, GetXrpcControllerHandlers<T, L>?]
+    handler: XrpcSubscriptionFn<L> | [LazyImport<Constructor<any>> | Constructor<any>, string?]
   ): XrpcRoute
 
   // General-purpose route grouping (mirrors Adonis's router.group()). Returns an
@@ -314,7 +320,7 @@ class XrpcRouter extends Macroable {
 
 The `LazyImport<T>` shape (`() => Promise<{ default: T }>`) lets consumers defer controller loading until first use — same pattern Adonis's router supports for `[() => import('#controllers/foo'), 'index']`. This isn't only an ergonomic choice for boot-time deferral: it's also what enables **hot reloading** of controller code in development. Adonis's HMR system invalidates the LazyImport callback's resolved module when the underlying controller file changes, so the next XRPC request re-imports the fresh module. Eager class references (e.g., `[ReportsController, 'create']` where `ReportsController` is imported at the top of `routes.ts`) bypass HMR — the route holds a permanent reference to the originally-imported class. Consumers should prefer the `LazyImport` form for any controller they want to iterate on without restarting the dev server.
 
-The optional second tuple element (the method name) is type-narrowed by `GetXrpcControllerHandlers<T, L>` so consumers get autocomplete + compile-time errors when naming a method that doesn't accept the right `XrpcContext<L>` shape. If omitted, the package falls back to a convention (likely `handle`, matching Adonis's default).
+The optional second tuple element is the method name. **v1 ships it as `string?` (loosely typed).** The intended narrowing — via the `GetXrpcControllerHandlers<T, L>` mapped type and a `T extends Constructor<any>` second generic on each builder method — is deferred to pre-release work tracked in `TODO.md`. Consumers will eventually get autocomplete + compile-time errors when naming a method that doesn't accept the right `XrpcContext<L>` shape; until then, the slot is unchecked. If the method name is omitted, the package falls back to a convention (likely `handle`, matching Adonis's default). Tightening `string?` to a narrowed mapped type later is non-breaking.
 
 Registration is **closure-deduplicated**: rather than create N wrapper closures (one per registered route, each capturing `lexicon` / `handler` / `auth` in its lexical scope), the package maintains a shared `RouteRegistry` (`Map<string, RouteInfo>` indexed by NSID) and registers a single shared **executor function** with atcute for every route. This matters at scale: a service hosting `com.atproto.*` + `app.bsky.*` lexicons easily reaches 100-200+ registered handlers (verified: `com.atproto.*` ships 86 XRPC methods in `@atcute/atproto`; `app.bsky.*` has 71+ in published Bluesky lexicons), and per-route closures would each retain references to their full captured scope — meaningful memory pressure that scales linearly.
 
@@ -486,23 +492,25 @@ class XrpcRouter extends Macroable {
     return new XrpcRouteGroup(groupDecl, groupRoutes)
   }
 
-  procedure<L extends XrpcProcedureLexicon, T extends Constructor<any>>(
+  // v1: see note above the abstract surface — method-name slot is `string?`,
+  // narrowing via the second generic is deferred to pre-release (TODO.md).
+  procedure<L extends XrpcProcedureLexicon>(
     lexicon: L,
-    handler: XrpcRouteFn<L> | [LazyImport<T> | T, GetXrpcControllerHandlers<T, L>?]
+    handler: XrpcRouteFn<L> | [LazyImport<Constructor<any>> | Constructor<any>, string?]
   ): XrpcRoute {
     return this.#register(lexicon, handler as XrpcHandlerInput)
   }
 
-  query<L extends XrpcQueryLexicon, T extends Constructor<any>>(
+  query<L extends XrpcQueryLexicon>(
     lexicon: L,
-    handler: XrpcRouteFn<L> | [LazyImport<T> | T, GetXrpcControllerHandlers<T, L>?]
+    handler: XrpcRouteFn<L> | [LazyImport<Constructor<any>> | Constructor<any>, string?]
   ): XrpcRoute {
     return this.#register(lexicon, handler as XrpcHandlerInput)
   }
 
-  subscription<L extends XrpcSubscriptionLexicon, T extends Constructor<any>>(
+  subscription<L extends XrpcSubscriptionLexicon>(
     lexicon: L,
-    handler: XrpcSubscriptionFn<L> | [LazyImport<T> | T, GetXrpcControllerHandlers<T, L>?]
+    handler: XrpcSubscriptionFn<L> | [LazyImport<Constructor<any>> | Constructor<any>, string?]
   ): XrpcRoute {
     return this.#register(lexicon, handler as XrpcHandlerInput)
   }
@@ -625,6 +633,8 @@ export function fromHttpContext(httpCtx: HttpContext): RequestContext {
   }
 }
 ```
+
+The `Logger` referenced in `RequestContext` is the type imported from `@adonisjs/core/http` — Adonis's `HttpContext.logger` is a request-scoped child logger tagged with `request_id`, so threading it through `RequestContext` preserves per-request log correlation across the dispatch boundary. Other sites that operate at app-level — the provider's `register()` / `boot()` / `ready()` lifecycle, where no request exists — import the root `Logger` from `@adonisjs/core/logger` instead. The WS path mirrors the HTTP shape by deriving the request-scoped logger via `app.logger.child({ request_id })` at the upgrade boundary. Both import sites are intentional and load-bearing; the split is not drift.
 
 ### `XrpcServer` — internal dispatch orchestrator
 
@@ -1230,10 +1240,20 @@ class XrpcContext<L extends XrpcLexicon> extends Macroable {
    *   user's generator body resumes inside the scope on every yield.
    *
    * Result: anything called downstream from the handler can access the
-   * current context via `XrpcContext.getOrFail()` without explicit threading
-   * in either path.
+   * current context via `XrpcContext.get()` (non-throwing) or
+   * `XrpcContext.getOrFail()` (throws) without explicit threading in either
+   * path.
    */
   static readonly als: AsyncLocalStorage<XrpcContext<XrpcLexicon>>
+
+  /**
+   * Static accessor for the current XRPC context. Returns `undefined` if called
+   * outside an XRPC handler's call stack. Use when callers need to branch on
+   * whether they're inside an XRPC scope (e.g., shared utility code that runs
+   * both inside and outside XRPC handlers and wants to enrich logs with
+   * XRPC-only fields when available). Otherwise prefer `getOrFail()`.
+   */
+  static get(): XrpcContext<XrpcLexicon> | undefined
 
   /**
    * Static accessor for the current XRPC context. Works in both HTTP-triggered
@@ -2239,7 +2259,7 @@ AdonisJS CORS is configured globally via `config/cors.ts` — there's no per-rou
 
 ### TypeScript inference for handlers
 
-The signature `procedure<L>(lexicon: L, handler: ...)` relies on TypeScript inferring `L` from the lexicon argument. For inline handlers this works directly. For controller-reference handlers, the `GetXrpcControllerHandlers<Controller, L>` mapped-conditional type (defined in the Public-exports section; similar in spirit to Adonis's own controller-method-name inference) narrows the second tuple element to the controller's methods whose first parameter is `XrpcContext<L>`. Verify the inference at implementation time — TypeScript's inference is sensitive to where conditional types fire and how the tuple positions resolve, so the lexicon argument must be inferred before the controller's method type is checked. Phase-2 codegen (`indexXrpc()`) sidesteps this entirely by emitting abstract base classes whose method signatures are concrete at codegen time.
+The signature `procedure<L>(lexicon: L, handler: ...)` relies on TypeScript inferring `L` from the lexicon argument. For inline handlers this works directly. v1 ships the controller-reference form with the method-name tuple element loosely typed as `string?` — the `GetXrpcControllerHandlers<Controller, L>` mapped-conditional type (sketched in the Public-exports section; similar in spirit to Adonis's own controller-method-name inference) is deferred to pre-release work, tracked in `TODO.md`, because the inference is non-trivial: TypeScript's behavior is sensitive to where conditional types fire and how the tuple positions resolve, so the lexicon argument must be inferred before the controller's method type is checked. Tightening `string?` to the narrowed type later is non-breaking. Phase-2 codegen (`indexXrpc()`) sidesteps this entirely by emitting abstract base classes whose method signatures are concrete at codegen time.
 
 ### Request ID generation for subscriptions
 
@@ -2282,6 +2302,19 @@ The sections above have been amended in-place for load-bearing decisions made du
 | `services/router.ts` singleton accessor | shown in § Package layout | descoped — no consumer use case for the atcute `XRPCRouter` outside the dispatch path |
 
 Plan 03 is the source of truth for all of the above. When the spec next gets a comprehensive rewrite, fold these inline; until then, treat the spec's § Package layout and § Public exports as historical snapshots.
+
+## Amendments since 2026-05-26
+
+The following are deliberate divergences introduced during Plan 04 drafting (`docs/plans/2026-05-25-xrpc-plan-04-provider.md`) — recorded here so future readers know to cross-reference. Plan 04 is the source of truth for each.
+
+| Divergence | Spec says | Plan 04 says |
+|------------|-----------|--------------|
+| Error-handler slot count | Two handlers — `errorHandler` (HTTP) and `subscriptionErrorHandler` (WS) with fall-through to the HTTP handler when the WS slot is unset (spec §_XrpcService_, ~lines 1586-1670). | Single `errorHandler` slot — both HTTP and WS paths invoke the one consumer-registered class. The dual-slot fall-through was unmotivated for v1 (no consumer needed asymmetric reporters); collapsing is non-breaking — single-slot is a strict subset that can be re-split later if a use case appears. |
+| `HttpContext.xrpc` Macroable getter | Ships on `HttpContext` at spec lines 1692-1740. | Dropped from v1. Consumers call `XrpcContext.getOrFail()` directly. The Macroable getter would only succeed on the HTTP-triggered path (WS has no `HttpContext`), so the asymmetry made the API more confusing than useful — `XrpcContext.getOrFail()` works symmetrically in both paths. |
+| `REPORTED` symbol error-dedup | Not described. | Plan 04 stamps caught errors with a `REPORTED` symbol so the executor's catch block doesn't double-report errors that already flowed through atcute's `handleException` hook. Implementation detail handling the executor-catch-vs-atcute-hook double-fire window — invisible to consumers. |
+| `XrpcServer.shutdown(graceMs?)` default | Sketched as "wait briefly for ack with a hard timeout; force `.terminate()` survivors" (§_Lifecycle phases_ point 8, ~line 1077). | Pinned at 3000ms default, sends 1001 close frames on graceful shutdown, force-`.terminate()`s survivors after the grace window. `defineConfig({ shutdownGraceMs })` was considered and deferred — single default is fine for v1, configurability is additive when needed. |
+
+When the spec next gets a comprehensive rewrite, fold these inline.
 
 ## Related work
 

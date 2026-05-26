@@ -62,6 +62,24 @@ function makeRequestCtx(): RequestContext {
   return fromHttpContext(new HttpContextFactory().create())
 }
 
+/**
+ * Runtime guards that narrow the executor's union return type while
+ * surfacing a clear error if the branch was wrong (better than a silent
+ * `as Response` cast hiding a regression).
+ */
+function ensureResponse(value: unknown): Response {
+  if (!(value instanceof Response)) {
+    throw new Error(`expected Response, got ${Object.prototype.toString.call(value)}`)
+  }
+  return value
+}
+function ensureAsyncIterable<T>(value: unknown): AsyncIterable<T> {
+  if (typeof (value as any)?.[Symbol.asyncIterator] !== 'function') {
+    throw new Error(`expected AsyncIterable, got ${Object.prototype.toString.call(value)}`)
+  }
+  return value as AsyncIterable<T>
+}
+
 // --- module-shape tests ---------------------------------------------------
 
 test.group('dispatch module exports', () => {
@@ -91,14 +109,16 @@ test.group('createXrpcExecutor — HTTP path', (group) => {
     })
     const requestCtx = makeRequestCtx()
 
-    const response = (await executor(
-      atcuteHttpCtx('http://localhost/xrpc/com.example.ping', {
-        method: 'POST',
-        body: JSON.stringify({}),
-        headers: { 'content-type': 'application/json' },
-      }),
-      requestCtx
-    )) as Response
+    const response = ensureResponse(
+      await executor(
+        atcuteHttpCtx('http://localhost/xrpc/com.example.ping', {
+          method: 'POST',
+          body: JSON.stringify({}),
+          headers: { 'content-type': 'application/json' },
+        }),
+        requestCtx
+      )
+    )
 
     assert.equal(invocations, 1)
     assert.instanceOf(response, Response)
@@ -112,10 +132,12 @@ test.group('createXrpcExecutor — HTTP path', (group) => {
       ctx.response.status(201).header('etag', 'W/"abc"').json({ created: true })
     })
 
-    const response = (await executor(
-      atcuteHttpCtx('http://localhost/xrpc/com.example.ping', { method: 'POST' }),
-      makeRequestCtx()
-    )) as Response
+    const response = ensureResponse(
+      await executor(
+        atcuteHttpCtx('http://localhost/xrpc/com.example.ping', { method: 'POST' }),
+        makeRequestCtx()
+      )
+    )
 
     assert.equal(response.status, 201)
     assert.equal(response.headers.get('etag'), 'W/"abc"')
@@ -129,10 +151,12 @@ test.group('createXrpcExecutor — HTTP path', (group) => {
       ctx.response.redirect('https://cdn.example/blob/abc', 302)
     )
 
-    const response = (await executor(
-      atcuteHttpCtx('http://localhost/xrpc/com.example.ping', { method: 'POST' }),
-      makeRequestCtx()
-    )) as Response
+    const response = ensureResponse(
+      await executor(
+        atcuteHttpCtx('http://localhost/xrpc/com.example.ping', { method: 'POST' }),
+        makeRequestCtx()
+      )
+    )
 
     assert.equal(response.status, 302)
     assert.equal(response.headers.get('location'), 'https://cdn.example/blob/abc')
@@ -238,10 +262,9 @@ test.group('createXrpcExecutor — subscription path', (group) => {
       yield { $type: 'com.example.stream#tick', n: 3 }
     })
 
-    const iterable = (await executor(
-      atcuteSubCtx('http://localhost/xrpc/com.example.stream'),
-      makeRequestCtx()
-    )) as AsyncIterable<any>
+    const iterable = ensureAsyncIterable<any>(
+      await executor(atcuteSubCtx('http://localhost/xrpc/com.example.stream'), makeRequestCtx())
+    )
     const collected = await Array.fromAsync(iterable)
 
     assert.lengthOf(collected, 3)
@@ -264,10 +287,9 @@ test.group('createXrpcExecutor — subscription path', (group) => {
       }
     })
 
-    const iterable = (await executor(
-      atcuteSubCtx('http://localhost/xrpc/com.example.stream'),
-      makeRequestCtx()
-    )) as AsyncIterable<any>
+    const iterable = ensureAsyncIterable<any>(
+      await executor(atcuteSubCtx('http://localhost/xrpc/com.example.stream'), makeRequestCtx())
+    )
     await Array.fromAsync(iterable)
 
     assert.lengthOf(observed, 3)
@@ -289,10 +311,9 @@ test.group('createXrpcExecutor — subscription path', (group) => {
     // Manual iteration here: we want to inspect what was yielded *before*
     // the throw. `Array.fromAsync` rejects without returning the partial
     // result, so it can't satisfy both assertions in this test.
-    const iterable = (await executor(
-      atcuteSubCtx('http://localhost/xrpc/com.example.stream'),
-      makeRequestCtx()
-    )) as AsyncIterable<any>
+    const iterable = ensureAsyncIterable<any>(
+      await executor(atcuteSubCtx('http://localhost/xrpc/com.example.stream'), makeRequestCtx())
+    )
     const collected: any[] = []
     let thrown: unknown = null
     try {

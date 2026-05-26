@@ -179,6 +179,13 @@ export class XrpcServer {
     // undefined here (i.e. a dispatch boundary skipped its `enterWith` /
     // `run`), the executor throws InternalServerError with a clear diagnostic
     // — no non-null assertion needed at this call site.
+    // `atcuteCtx: any` is intentional — this closure is registered with three
+    // add* methods whose handler signatures are structurally incompatible
+    // (ProcedureContext / QueryContext / SubscriptionContext all differ in
+    // shape and return type). The `as any` casts at each call site are the
+    // explicit escape. `(ProcedureConfig<any> | QueryConfig<any>)['handler']`
+    // resolves to a *function type* (not a context type) and doesn't cover
+    // subscriptions, so it's not a useful annotation here.
     const handler = (atcuteCtx: any) => this.#executor(atcuteCtx, requestContextStore.getStore())
 
     // Atcute's add* methods type the handler per route kind (Response for
@@ -221,7 +228,7 @@ export class XrpcServer {
    * 3. Wait up to `graceMs` for all clients to ack the close. Each ack
    *    removes the client from `wss.clients`; we poll until the set is
    *    empty or the grace window expires.
-   * 4. Force-terminate any survivors (non-acking or misbehaving clients)
+   * 4. Force-terminate any survivors (clients that did not ack the close)
    *    via `.terminate()`, which kills the underlying TCP socket without
    *    sending a frame.
    *

@@ -66,6 +66,10 @@ export const { middleware } = router.named({
     await assert.fileExists('config/atproto_xrpc.ts')
     await assert.fileContains('config/atproto_xrpc.ts', 'defineConfig({')
 
+    // Exception handler stub is published — consumers extend ExceptionHandler here.
+    await assert.fileExists('app/exceptions/xrpc_handler.ts')
+    await assert.fileContains('app/exceptions/xrpc_handler.ts', 'extends ExceptionHandler')
+
     // Provider and env wiring happen regardless of store choice
     await assert.fileContains('adonisrc.ts', `${PACKAGE_NAME}/provider`)
   })

@@ -138,7 +138,13 @@ test.group('XrpcRouter — commit', () => {
   })
 })
 
-test.group('XrpcRouter — macroable', () => {
+test.group('XrpcRouter — macroable', (group) => {
+  // Macros attach to the class prototype, so clean up after the macro test
+  // to avoid bleeding into other test files that touch the same class.
+  group.teardown(() => {
+    delete (XrpcRoute.prototype as any).mark
+  })
+
   test('XrpcRouter / XrpcRoute / XrpcRouteGroup expose .macro()', ({ assert }) => {
     assert.isFunction((XrpcRouter as any).macro)
     assert.isFunction((XrpcRoute as any).macro)
@@ -155,5 +161,18 @@ test.group('XrpcRouter — macroable', () => {
     const out = (route as any).mark()
     assert.equal((out as any)._marked, true)
     assert.equal(out, route, 'macro returns the route for chaining')
+  })
+})
+
+test.group('XrpcRouter — routeFor lookup', () => {
+  test('returns the registered XrpcRoute for a known NSID', ({ assert }) => {
+    const r = new XrpcRouter(fakeApp())
+    r.procedure(procedureLex, async () => ({}))
+    assert.instanceOf(r.routeFor('com.example.test.proc'), XrpcRoute)
+  })
+
+  test('returns undefined for an unknown NSID', ({ assert }) => {
+    const r = new XrpcRouter(fakeApp())
+    assert.isUndefined(r.routeFor('com.example.nonexistent'))
   })
 })

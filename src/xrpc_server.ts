@@ -54,7 +54,7 @@ import type { createNodeWebSocket } from '@atcute/xrpc-server-node'
 export type SharedXrpcExecutor = (
   atcuteCtx: any,
   requestCtx?: RequestContext
-) => Promise<Response | AsyncIterable<unknown>>
+) => Promise<Response> | AsyncIterable<unknown>
 
 /**
  * Dispatch orchestrator. Owns the atcute `XRPCRouter` and the WebSocket
@@ -252,7 +252,11 @@ export function createXrpcExecutor(deps: {
 }): SharedXrpcExecutor {
   const { operations, serializer } = deps
 
-  return async (atcuteCtx, requestCtx) => {
+  // NOTE: this is intentionally a non-async function. Subscription routes
+  // need to return an `AsyncIterable<unknown>` *directly* — atcute's
+  // `for await (const message of handler(context))` doesn't unwrap a Promise.
+  // HTTP routes return `Promise<Response>` from `XrpcContext.als.run(...)`.
+  return (atcuteCtx, requestCtx) => {
     // `requestCtx` arrives materialized — by the HTTP dispatch middleware on
     // the procedure/query path, by `#installWebSocketHandler` on the WS path.
     // The registered atcute closure reads `requestContextStore.getStore()`

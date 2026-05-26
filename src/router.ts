@@ -14,9 +14,7 @@ import type {
 type AnyConstructor = new (...args: any[]) => any
 type AnyLazyImport = () => Promise<{ default: AnyConstructor }>
 
-export type XrpcHandlerInput =
-  | ((ctx: any) => any)
-  | [AnyLazyImport | AnyConstructor, string?]
+export type XrpcHandlerInput = ((ctx: any) => any) | [AnyLazyImport | AnyConstructor, string?]
 
 export type NormalizedHandler =
   | { kind: 'function'; fn: (ctx: any) => any }

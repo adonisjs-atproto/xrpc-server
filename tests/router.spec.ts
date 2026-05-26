@@ -1,5 +1,5 @@
 import { test } from '@japa/runner'
-import { ApplicationService } from '@adonisjs/core/types'
+import type { ApplicationService } from '@adonisjs/core/types'
 import { XrpcRouter, XrpcRoute, XrpcRouteGroup } from '../src/router.js'
 
 function fakeApp(): ApplicationService {

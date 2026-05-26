@@ -168,7 +168,7 @@ export const REPORTED: unique symbol = Symbol('xrpc:reported')
  */
 export class XrpcService {
   #app: ApplicationService
-  #errorHandlerFactory?: LazyImport<{ default: new (...args: any[]) => ExceptionHandler }>
+  #errorHandlerFactory?: LazyImport<new (...args: any[]) => ExceptionHandler>
   #resolvedErrorHandler?: ExceptionHandler
 
   constructor(app: ApplicationService) {
@@ -187,7 +187,7 @@ export class XrpcService {
    * The factory is invoked lazily on first error; the resolved instance is
    * memoized.
    */
-  errorHandler(factory: LazyImport<{ default: new (...args: any[]) => ExceptionHandler }>): this {
+  errorHandler(factory: LazyImport<new (...args: any[]) => ExceptionHandler>): this {
     this.#errorHandlerFactory = factory
     return this
   }
@@ -215,7 +215,7 @@ export class XrpcService {
 Implementation notes:
 
 - `app.container.make(mod.default)` rather than `new mod.default(app)` because the container handles DI: it sees the constructor signature `constructor(app: ApplicationService)` on the `ExceptionHandler` base class and supplies the app instance automatically. Same path Adonis's own server.errorHandler resolution uses.
-- The `LazyImport<{ default: new (...args: any[]) => ExceptionHandler }>` type intentionally mirrors `@poppinss/utils`'s `LazyImport` shape. `LazyImport` is type-only.
+- `LazyImport<TheConstructorType>` from `@poppinss/utils/types` is defined as `() => Promise<{ default: TheConstructorType }>` — i.e. it wraps the `{ default: ... }` import-default unwrap itself. Pass the bare constructor type, NOT a `{ default: ... }` wrapper, or you double-wrap and the spec.ts factories will be type-incompatible. `@poppinss/utils` is declared as both a devDependency (for our own typecheck) and a peerDependency (so consumers can resolve the type from our `.d.ts` against their own install). `LazyImport` is type-only.
 - The `REPORTED` symbol export lives on this module (not on the provider) because it's a service-level concern: the executor (`src/xrpc_server.ts`) and atcute hooks (`providers/provider.ts`) both import it from here. Centralizing the marker on `XrpcService`'s module keeps the dedup contract obvious.
 
 - [x] **Step 2: Write tests** for `XrpcService`'s factory storage, lazy resolution, and memoization behavior.

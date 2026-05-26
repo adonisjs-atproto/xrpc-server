@@ -665,10 +665,7 @@ test.group('createXrpcExecutor — HTTP procedure path', (group) => {
     assert.deepEqual(body, { pong: true, requestId: requestCtx.requestId })
   })
 
-  test('honors status / header / json overrides set via ctx.response', async ({
-    assert,
-    app,
-  }) => {
+  test('honors status / header / json overrides set via ctx.response', async ({ assert, app }) => {
     const executor = createXrpcExecutor({
       operations: new Map([
         [
@@ -1658,7 +1655,8 @@ git commit -m "feat(xrpc): add XrpcDispatchMiddleware (HTTP path intercept + atc
 
 What this minimal provider does:
 
-- **`boot()`**: install the `router.xrpc` getter on the Adonis router so consumers can call `router.xrpc.procedure(...)` etc. (mechanism is Adonis-conventional — `Router.macro('xrpc', ...)` or equivalent; defer to current `@adonisjs/http-server@8.x` Macroable API at execution time).
+- **`register()`**: bind the `XrpcRouter` as a container singleton. Runs before any provider's `boot()`, so the binding is available to other providers and to `boot()` itself.
+- **`boot()`**: resolve the `XrpcRouter` singleton eagerly (so the getter body can return synchronously) and install a `router.xrpc` getter on `Router.prototype` via `Object.defineProperty`. The main `Router` class in `@adonisjs/http-server@8.x` does NOT extend `Macroable` (only the sub-classes — `Route`, `RouteGroup`, `BriskRoute`, `RouteResource`, `RouteMatchers` — do), so `Router.macro(...)` / `Router.getter(...)` aren't available. Mutating `Router.prototype` directly via `Object.defineProperty` is the same primitive `Macroable.getter` wraps internally (cf. `@poppinss/macroable/build/index.js` line 92). Uses `configurable: true` so tests can re-run `boot()` across multiple `setupApp()` calls without `TypeError: Cannot redefine property`.
 - **`ready()`** (web environment only): commit the `XrpcRouter`, construct the atcute `XRPCRouter` + `XrpcSerializer` + executor + `XrpcServer`, container-bind `XrpcServer`, then `await xrpcServer.start()`. Provider `ready()` fires INSIDE `app.start(cb)` after `setNodeServer(...)` — so `XrpcServer.start()` sees the live `nodeServer` and `#installWebSocketHandler` runs naturally.
 
 **Middleware mounting is NOT the provider's job** — that's a consumer choice in `start/kernel.ts` (production) and a `setupApp`-fixture concern (tests):
@@ -1686,23 +1684,33 @@ import { Router } from '@adonisjs/core/http'
 import { XRPCRouter } from '@atcute/xrpc-server'
 import { createNodeWebSocket } from '@atcute/xrpc-server-node'
 import type { ApplicationService } from '@adonisjs/core/types'
+import type { ContainerProviderContract } from '@adonisjs/application/types'
 
 import { XrpcRouter } from '../src/router.js'
 import { XrpcServer, createXrpcExecutor } from '../src/xrpc_server.js'
 import { XrpcSerializer } from '../src/serializer.js'
 
 // The `Router.xrpc` type augmentation lives in `src/types.ts` (Plan 01
-// Task 6 Step 4) so it's visible everywhere the package's types are loaded,
-// without forcing each `router.xrpc` consumer to side-effect-import this
-// provider for typecheck. This file only does the runtime install below.
+// Task 6 Step 4) so it's visible everywhere the package's types are
+// loaded, without forcing each `router.xrpc` consumer to side-effect-
+// import this provider for typecheck. The runtime install happens
+// inline in boot() below.
 
 /**
  * Minimal XRPC provider — Plan 03 scope.
  *
- * boot(): registers the XrpcRouter as a container singleton and installs
- * the `router.xrpc` Macroable getter that returns it. Middleware mounting
- * is the consumer's responsibility (start/kernel.ts) or setupApp's (tests)
- * — not the provider's.
+ * register(): binds the XrpcRouter as a container singleton. Runs before
+ * any other provider's boot(), so the binding is available by the time
+ * boot() resolves it.
+ *
+ * boot(): resolves the XrpcRouter singleton eagerly and installs a
+ * `router.xrpc` getter on `Router.prototype` via `Object.defineProperty`.
+ * (The main `Router` class isn't `Macroable` in `@adonisjs/http-server@8.x`
+ * — only the route sub-classes are — so `Router.macro(...)` /
+ * `Router.getter(...)` aren't available; the prototype-property primitive
+ * is what `Macroable.getter` wraps internally anyway.) Middleware
+ * mounting is the consumer's responsibility (start/kernel.ts) or
+ * setupApp's (tests) — not the provider's.
  *
  * start() (all environments): commits the XrpcRouter so further
  * `router.xrpc.*()` registrations throw. Not gated on env because Plan 06's
@@ -1715,26 +1723,33 @@ import { XrpcSerializer } from '../src/serializer.js'
  * ready() (web only): constructs the atcute XRPCRouter + executor +
  * XrpcServer, container-binds, then calls `XrpcServer.start()` to install
  * routes onto atcute and wire the WS upgrade handler. Plan 04 expands
- * this with `XrpcService` facade, error-reporter registration,
- * `HttpContext.xrpc` getter, and atcute's handleException /
- * handleSubscriptionException wiring.
+ * this with `XrpcService` facade, error-reporter registration, and
+ * atcute's handleException / handleSubscriptionException wiring.
  */
-export default class XrpcProvider {
+export default class XrpcProvider implements ContainerProviderContract {
   constructor(protected app: ApplicationService) {}
 
-  async boot() {
+  register() {
     this.app.container.singleton(XrpcRouter, () => new XrpcRouter(this.app))
     this.app.container.alias('xrpcRouter', XrpcRouter)
+  }
 
-    // Resolve the singleton eagerly in boot() and capture it in closure so
-    // the macro can return it synchronously — `router.xrpc.procedure(...)`
-    // is called synchronously at consumer route-definition time, so the
-    // getter can't hand back a Promise. The Router instance's own `this`
-    // doesn't expose the app/container, which is the other reason the
-    // resolution has to happen here rather than inside the macro body.
+  async boot() {
+    // Resolve eagerly so the getter body can return synchronously —
+    // `router.xrpc.procedure(...)` is called synchronously at consumer
+    // route-definition time, so the getter can't hand back a Promise.
+    // Router instances don't expose `app`/container themselves (their
+    // `#app` field is private), so closure capture from boot() is the
+    // only way to thread the resolved XrpcRouter into the getter body.
     const xrpcRouter = await this.app.container.make(XrpcRouter)
-    Router.macro('xrpc', function () {
-      return xrpcRouter
+
+    // `configurable: true` so that re-running `boot()` across multiple
+    // `setupApp()` calls in the test suite redefines the getter cleanly
+    // rather than throwing `TypeError: Cannot redefine property`.
+    Object.defineProperty(Router.prototype, 'xrpc', {
+      get() { return xrpcRouter },
+      configurable: true,
+      enumerable: false,
     })
   }
 
@@ -1792,8 +1807,8 @@ export default class XrpcProvider {
 
 Notes for the implementation:
 
-- `Router.macro` uses the fact that Adonis's router is Macroable.
-- `this.app.container.singleton(XrpcRouter, ...)` ensures we always have one XrpcRouter per app; the macro is a thin accessor that returns the singleton instance from the container.
+- The `router.xrpc` getter is installed via `Object.defineProperty(Router.prototype, 'xrpc', { get() { return xrpcRouter }, configurable: true, enumerable: false })` inline in `boot()`. The main `Router` class isn't `Macroable`, so the prototype-property primitive replaces `Router.getter(...)`. `configurable: true` is required for re-runnable tests.
+- `this.app.container.singleton(XrpcRouter, ...)` ensures we always have one XrpcRouter per app; the prototype getter is a thin accessor that returns the eagerly-resolved singleton from a closure-captured variable. The closure captures `xrpcRouter` only, not the provider instance — V8's static analysis correctly identifies that the getter body's free variables don't include `this`.
 - Test setups that share an `app` across tests get a fresh container per setup (via `setupApp`'s `IgnitorFactory`), so no cross-test bleed of the singleton.
 - The dispatch middleware is **not** mounted here — see the Task 7b intro for why and where it goes instead (consumer's `start/kernel.ts` in production; `setupApp`'s `app.start(cb)` block in tests).
 

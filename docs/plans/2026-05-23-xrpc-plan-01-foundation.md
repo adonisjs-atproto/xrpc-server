@@ -1197,8 +1197,8 @@ Append the following block to `src/types.ts` (after the existing primitive expor
 // is visible everywhere `src/types.ts` is — including test files and
 // consumer code that import package symbols transitively — without forcing
 // each `router.xrpc` consumer to add a side-effect import of the provider
-// just to satisfy the typechecker. The runtime install (Router.macro) still
-// happens in the provider's `boot()`; this declaration is type-only.
+// just to satisfy the typechecker. The runtime install happens in the
+// provider's `boot()` (see Plan 03); this declaration is type-only.
 import type { XrpcRouter } from './router.js'
 
 declare module '@adonisjs/core/http' {

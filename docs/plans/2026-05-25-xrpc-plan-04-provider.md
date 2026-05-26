@@ -54,7 +54,7 @@ The provider's `shutdown()` hook delegates to a new `XrpcServer.shutdown(graceMs
 These verifications must pass before executing this plan. Don't run task subagents until each `[ ]` below is `[x]`.
 
 - [ ] Plans 01, 02, 03 are committed to `main` and `pnpm test` passes on a clean checkout. The minimal provider from Plan 03 Task 7b is in place at `providers/provider.ts` with `boot()` + `start()` + `ready()` lifecycle wired.
-- [ ] `cat providers/provider.ts` shows the Plan 03 minimal-provider shape: `boot()` binds `XrpcRouter` singleton + installs `Router.macro('xrpc', ...)`, `start()` commits the router, `ready()` (web-only) constructs the atcute `XRPCRouter` + executor + `XrpcServer`.
+- [ ] `cat providers/provider.ts` shows the Plan 03 minimal-provider shape: `register()` binds the `XrpcRouter` singleton, `boot()` installs the `router.xrpc` accessor on `Router.prototype`, `start()` commits the router, `ready()` (web-only) constructs the atcute `XRPCRouter` + executor + `XrpcServer`. (See Plan 03 § Task 7b for the install mechanism — `Router` isn't `Macroable`, so it's a direct `Object.defineProperty(Router.prototype, ...)`.)
 - [ ] `grep -n 'ERROR-REPORTING SEAM (Plan 04)' src/xrpc_server.ts` returns three lines: one in `createXrpcExecutor`'s `deps` type comment, one in the procedure/query catch block, one in `wrapSubscriptionIterator`'s catch block. If any are missing, Plan 03 didn't land cleanly — back out and verify Plan 03 before continuing.
 - [ ] **Verify atcute `XRPCRouterOptions` shape**: read `~/Development/git/github.com/mary-ext/atcute/packages/internal/xrpc-server/lib/router.ts` (on the `trunk` branch — see memory `atcute-repo-paths`) to confirm the `handleException` and `handleSubscriptionException` field names, signatures, and what atcute does by default when they're absent. The spec sketches them as wire-format encoding hooks — verify both: (a) their function signatures (specifically, what context object they receive), and (b) that throwing from inside one causes atcute to fall back to its default error encoding (vs. crashing the request). If the atcute API differs from the spec sketch, surface it as a finding before drafting Task 4's code — the rest of the plan keys off this shape.
 - [ ] **Verify `ws.WebSocketServer.clients` iteration is safe under concurrent close**: read `~/Development/git/github.com/websockets/ws/lib/websocket-server.js` (if cloned; otherwise `pnpm info ws repository` and reach via raw GitHub) to confirm that iterating `wss.clients` while clients are closing is safe (the spec sketch in Task 5 assumes it is). If iteration must use `Array.from(wss.clients)` to snapshot, note that as a Task 5 adjustment.
@@ -579,25 +579,13 @@ Task 4 closes the gap. Both paths converge on a single `makeAtcuteHook(xrpc)` he
 
 - [ ] **Step 1: Expand `providers/provider.ts`**
 
-The minimal provider from Plan 03 Task 7b looks like:
+The minimal provider from Plan 03 Task 7b already has `register()` (binds the `XrpcRouter` singleton + `xrpcRouter` alias) and `boot()` (installs the `router.xrpc` accessor on `Router.prototype`). Plan 04 adds a second container binding into `register()` for the `XrpcService` facade — the install mechanism for `router.xrpc` itself is unchanged from Plan 03 and doesn't need to be restated here.
 
 ```ts
-// Existing (Plan 03):
-async boot() {
-  this.app.container.singleton(XrpcRouter, () => new XrpcRouter(this.app))
-  this.app.container.alias('xrpcRouter', XrpcRouter)
-  const xrpcRouter = await this.app.container.make(XrpcRouter)
-  Router.macro('xrpc', function () { return xrpcRouter })
-}
-```
-
-Expand `boot()` to:
-
-```ts
-import { Router } from '@adonisjs/core/http'
 import { XRPCRouter } from '@atcute/xrpc-server'
 import { createNodeWebSocket } from '@atcute/xrpc-server-node'
 import type { ApplicationService } from '@adonisjs/core/types'
+import type { ContainerProviderContract } from '@adonisjs/application/types'
 
 import { XrpcRouter } from '../src/router.js'
 import { XrpcServer, createXrpcExecutor } from '../src/xrpc_server.js'
@@ -606,15 +594,13 @@ import { XrpcService, REPORTED } from '../src/xrpc_service.js'
 import { XrpcContext } from '../src/context.js'
 import { XrpcError, InternalServerError } from '../src/errors.js'
 
-export default class XrpcProvider {
+export default class XrpcProvider implements ContainerProviderContract {
   constructor(protected app: ApplicationService) {}
 
-  async boot() {
-    // --- Plan 03 (unchanged): XrpcRouter binding + router.xrpc macro ---
+  register() {
+    // --- Plan 03 (unchanged): XrpcRouter binding ---
     this.app.container.singleton(XrpcRouter, () => new XrpcRouter(this.app))
     this.app.container.alias('xrpcRouter', XrpcRouter)
-    const xrpcRouter = await this.app.container.make(XrpcRouter)
-    Router.macro('xrpc', function () { return xrpcRouter })
 
     // --- Plan 04: XrpcService binding ---
     // Bound here so `services/xrpc.ts`'s `app.booted(...)` hook can resolve
@@ -622,6 +608,15 @@ export default class XrpcProvider {
     // keep it stable.
     this.app.container.singleton(XrpcService, () => new XrpcService(this.app))
     this.app.container.alias('xrpc', XrpcService)
+  }
+
+  async boot() {
+    // --- Plan 03 (unchanged): install the router.xrpc accessor on
+    // Router.prototype. See Plan 03 Task 7b Step 1 for the mechanism
+    // (`Object.defineProperty(Router.prototype, 'xrpc', ...)` — `Router`
+    // isn't `Macroable` so neither `Router.macro` nor `Router.getter` is
+    // available). Plan 04 doesn't add anything to boot().
+    // ... (keep the existing inline body verbatim) ...
   }
 
   async start() {

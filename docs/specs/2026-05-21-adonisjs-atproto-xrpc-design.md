@@ -188,7 +188,7 @@ export { XrpcContextFactory } from './factories/http.js'
 
 ### Router getter: `router.xrpc`
 
-The package's provider attaches the `router.xrpc` accessor via `Router.macro(...)` (AdonisJS's Macroable mechanism on the `Router` class itself). The XrpcRouter is registered as a container singleton in `register()`; the macro is installed in `boot()` and closes over the resolved singleton so it can return synchronously:
+The package's provider attaches the `router.xrpc` accessor by installing a getter on `Router.prototype` via `Object.defineProperty`. The main `Router` class in `@adonisjs/http-server@8.x` does NOT extend `Macroable` (only the sub-classes — `Route`, `RouteGroup`, `BriskRoute`, `RouteResource`, `RouteMatchers` — do), so `Router.macro(...)` / `Router.getter(...)` aren't available. Mutating `Router.prototype` directly is the same primitive `Macroable.getter` wraps internally (cf. `@poppinss/macroable/build/index.js` line 92). The XrpcRouter is registered as a container singleton in `register()`; the getter is installed in `boot()` and closes over the resolved singleton so it can return synchronously:
 
 ```ts
 // in providers/provider.ts
@@ -197,15 +197,22 @@ The package's provider attaches the `router.xrpc` accessor via `Router.macro(...
 this.app.container.singleton(XrpcRouter, () => new XrpcRouter(this.app))
 this.app.container.alias('xrpcRouter', XrpcRouter)
 
-// boot(): resolve eagerly so the macro can return synchronously —
+// boot(): resolve eagerly so the getter can return synchronously —
 // `router.xrpc.procedure(...)` is called synchronously at consumer
 // route-definition time, so the getter can't hand back a Promise.
 // Router instances don't expose `app`/container themselves (their `#app`
 // field is private), so closure capture from boot() is the only way to
-// thread the resolved XrpcRouter into the macro body.
+// thread the resolved XrpcRouter into the getter body.
 const xrpcRouter = await this.app.container.make(XrpcRouter)
-Router.macro('xrpc', function () {
-  return xrpcRouter
+
+// `configurable: true` matches `Macroable.getter`'s default so re-running
+// `boot()` across multiple `setupApp()` calls in the test suite redefines
+// the getter cleanly rather than throwing `TypeError: Cannot redefine
+// property`.
+Object.defineProperty(Router.prototype, 'xrpc', {
+  get() { return xrpcRouter },
+  configurable: true,
+  enumerable: false,
 })
 ```
 
@@ -1078,7 +1085,7 @@ The `XrpcRouter.commit()` boundary establishes a well-defined ordering between r
 In app boot order:
 
 1. **Provider `register()`** (sync) — registers the `XrpcRouter` as a container singleton and aliases `'xrpcRouter'` to it. No objects beyond the binding factory exist yet. Runs in all environments (container bindings are env-agnostic). Plan 04 adds: register `XrpcService` factory here too.
-2. **Provider `boot()`** (async) — resolves the `XrpcRouter` singleton eagerly (so the macro below can close over it) and installs the `router.xrpc` macro via `Router.macro('xrpc', function () { return xrpcRouter })`. Closure capture is required because `Router` instances don't expose `app`/container — the macro's `this` binds to the Router, not the provider. Runs in all environments. Plan 04 adds: install the `HttpContext.xrpc` macro here too.
+2. **Provider `boot()`** (async) — resolves the `XrpcRouter` singleton eagerly (so the getter below can close over it) and installs the `router.xrpc` getter via `Object.defineProperty(Router.prototype, 'xrpc', { get() { return xrpcRouter }, configurable: true, enumerable: false })`. The main `Router` class isn't `Macroable` in `@adonisjs/http-server@8.x` (only the route sub-classes are), so the prototype-property primitive replaces `Router.macro(...)` / `Router.getter(...)` here. Closure capture is required because `Router` instances don't expose `app`/container. Runs in all environments.
 3. **Preloads** — `start/routes.ts` (and any other preload) runs. `router.xrpc.{procedure, query, subscription}(...)` calls populate the builder's registry. Per Adonis convention, preloads run in all environments by default — so XRPC routes are registered in console/test envs too (which is what makes Plan 06's `list:xrpc:routes` ace command possible).
 4. **Provider `start()`** (async) — calls `router.xrpc.commit()` to freeze the builder. **Not gated on environment** — ace commands (Plan 06's `list:xrpc:routes`) running in `console` env need to read the same canonical committed registry the web server would. Commit in all envs makes that registry consistent regardless of who's reading it. After commit, declaration methods throw — the same boundary AdonisJS's `router.commit()` establishes.
 5. **`hooks.init`** — phase-2 codegen hook (`indexXrpc()`) reads the committed registry to emit typed abstract base classes for any controller-reference registrations.

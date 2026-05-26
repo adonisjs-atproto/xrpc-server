@@ -4,13 +4,52 @@
 >
 > **Model:** Claude Sonnet (current generation) — the design and audit work is settled in the spec and plans; execution is mechanical enough that Opus is overkill.
 
-**Goal:** Expand Plan 03's minimal provider into the full `XrpcProvider` + `XrpcService` facade. After this plan, consumers register their `ExceptionHandler` subclass (from `app/exceptions/xrpc_handler.ts` — the stub published by Plan 01's configure command) via `xrpc.errorHandler(() => import('#exceptions/xrpc_handler'))` in `start/kernel.ts`, atcute's `XRPCRouter` is constructed with `handleException` / `handleSubscriptionException` hooks so atcute-internal errors (parse failures, route mismatches) flow through the same handler as handler-side errors, and the provider performs graceful WebSocket teardown on SIGTERM / dev-reload so subscription clients receive a clean 1001 (Going Away) frame instead of hanging until ping-timeout.
+**Goal:** Expand Plan 03's minimal provider into the full `XrpcProvider` + `XrpcService` facade. After this plan, consumers register their `ExceptionHandler` subclass (from `app/exceptions/xrpc_handler.ts` — the stub published by Plan 01's configure command) via `xrpc.errorHandler(() => import('#exceptions/xrpc_handler'))` in `start/kernel.ts`, atcute's `XRPCRouter` is constructed with a `handleException` hook so atcute-internal HTTP errors (parse failures, route mismatches, lexicon assertion) flow through the same handler as handler-side errors, subscription-path error customization continues to live in `wrapSubscriptionIterator`'s catch block (atcute has no equivalent subscription hook — see _Amendments since 2026-05-26_ below), and the provider performs graceful WebSocket teardown on SIGTERM / dev-reload so subscription clients receive a clean 1001 (Going Away) frame instead of hanging until ping-timeout.
 
 **Architecture:** `XrpcService` is the small consumer-facing facade — `@thisismissem/adonisjs-atproto-xrpc/services/xrpc` re-exports a singleton accessor in the shape of `@adonisjs/core/services/server`, so `import xrpc from '...'` works inside `start/kernel.ts`. Single registration slot: `xrpc.errorHandler(factory)` stores the lazy import; first error triggers resolution via `app.container.make(mod.default)` which constructs the consumer's subclass with the container's DI (the base class's `constructor(app: ApplicationService)` is auto-satisfied). The resolved instance is memoized.
 
-The provider's `boot()` binds the `XrpcService` singleton alongside the existing `XrpcRouter` singleton. The provider's `ready()` widens Plan 03's atcute `XRPCRouter` construction to pass `handleException` + `handleSubscriptionException` (both delegate to the same `makeAtcuteHook(xrpc)` helper), and widens `createXrpcExecutor`'s `deps` to include `xrpc: XrpcService` — Plan 03's comment-anchored `// ERROR-REPORTING SEAM (Plan 04)` lines in the executor's procedure/query catch and `wrapSubscriptionIterator`'s catch become real calls: `await handler?.report(err, xrpcCtx)` (when `handler.shouldReport(err)` is truthy) followed by `throw await handler.handle(err, xrpcCtx)`. The returned `XrpcError` is what atcute wire-encodes — handler-side errors are sanitized by the consumer's `handle()` (default: env-aware via the `ExceptionHandler` base) before atcute sees them.
+The provider's `boot()` binds the `XrpcService` singleton alongside the existing `XrpcRouter` singleton. The provider's `ready()` widens Plan 03's atcute `XRPCRouter` construction to pass `handleException` (HTTP path) and `onSocketError` (subscription telemetry only — atcute does not expose a subscription-equivalent of `handleException` for wire-format customization). Subscription-path error reporting/sanitization happens inside `wrapSubscriptionIterator`'s catch block via the same `runConsumerHandler` helper, BEFORE the existing translation to `XRPCSubscriptionError`. `createXrpcExecutor`'s `deps` widen to include `xrpc: XrpcService` — Plan 03's comment-anchored `// ERROR-REPORTING SEAM (Plan 04)` lines in the executor's procedure/query catch and `wrapSubscriptionIterator`'s catch become real calls: `await handler?.report(err, xrpcCtx)` (when `handler.shouldReport(err)` is truthy) followed by `throw await handler.handle(err, xrpcCtx)`. The returned `XrpcError` is what atcute wire-encodes — handler-side errors are sanitized by the consumer's `handle()` (default: env-aware via the `ExceptionHandler` base) before atcute sees them.
 
-The provider's `shutdown()` hook delegates to a new `XrpcServer.shutdown(graceMs?)` that stops accepting new upgrades, sends 1001 to all connected clients, waits briefly, then `.terminate()`s survivors.
+## Amendments since 2026-05-26 (pre-flight)
+
+**Atcute exposes no `handleSubscriptionException` hook.** Plan 04's earlier draft assumed `XRPCRouterOptions` had a symmetric pair of `handleException` (HTTP) + `handleSubscriptionException` (subscription). Verification against `~/Development/git/github.com/mary-ext/atcute/packages/servers/xrpc-server/lib/main/router.ts` (trunk) shows the actual surface is asymmetric:
+
+| Hook | Path | Effect |
+|---|---|---|
+| `handleException` | HTTP | Translates a thrown error → `Response`. Configurable, can customize wire format. |
+| `onError` | HTTP | Fire-and-forget telemetry. Cannot change response. |
+| `onSocketError` | WS | Fire-and-forget telemetry. Cannot influence close frame. |
+
+For subscriptions, atcute's error handling is internal and fixed: throwing `XRPCSubscriptionError` → emit error frame + close with `err.closeCode`; throwing anything else → close `1011` + invoke `onSocketError`. The only way to customize the subscription wire-error is to throw a properly-shaped `XRPCSubscriptionError`, which `wrapSubscriptionIterator` (Plan 03 Task 4) already does.
+
+**Concrete impact on Task 4:**
+
+- The atcute construction in `provider.ready()` becomes `new XRPCRouter({ websocket: ws.adapter, handleException: makeAtcuteHttpHook(xrpc), onSocketError: makeSocketErrorObserver(xrpc) })`. **No `handleSubscriptionException` key.**
+- The `makeAtcuteHook` helper splits into two: `makeAtcuteHttpHook(xrpc)` (the existing logic — runs consumer handler, throws sanitized error for atcute to encode as the HTTP response) and `makeSocketErrorObserver(xrpc)` (telemetry-only — calls `handler.report(err, ctx)` if `shouldReport` is true, does NOT throw, returns void).
+- Subscription error reporting/sanitization (the consumer's full `report` + `handle` cycle) happens inside `wrapSubscriptionIterator`'s catch block via the `runConsumerHandler(xrpc, err, xrpcCtx)` call from Task 3. The returned `XrpcError` is what `wrapSubscriptionIterator` then translates to `XRPCSubscriptionError({ error: sanitized.errorName, message: sanitized.message })`, which atcute encodes as the error frame.
+- The `REPORTED` symbol dedup still matters but only protects against double-handling on the HTTP path (where atcute's `handleException` runs after the executor catch may have already run for handler-side errors). Subscription path has only one report site (the wrapper's catch), so no dedup needed there.
+
+The two-handler split the spec sketched assumed atcute would grow the hook; it didn't. The "single consumer handler, asymmetric wiring" design above is the correct shape for the actual atcute API.
+
+When Task 4's code lands, replace the `makeAtcuteHook` block with the two split helpers per the amendment.
+
+**Graceful WebSocket teardown registers on `app.terminating(...)`, not on provider `shutdown()`.** Plan 04's earlier draft assumed provider `shutdown()` hooks ran BEFORE the Node HTTP server's `.close()`. Verification against `~/Development/git/github.com/adonisjs/application/src/application.ts:874` (`Application.terminate()`) + `~/Development/git/github.com/adonisjs/core/src/ignitor/http.ts:76` (`HttpServerProcess.#monitorAppAndServer`) shows the ordering is reversed:
+
+```ts
+// Application.terminate() body
+await this.#hooks.runner('terminating').runReverse(this)  // 1. terminating hooks, LIFO
+await this.#providersManager.shutdown(true)               // 2. provider shutdown hooks
+```
+
+`HttpServerProcess.#monitorAppAndServer` registers `app.terminating(async () => { await this.#close(nodeHttpServer) })` during HTTP startup. `nodeHttpServer.close()`'s callback fires only when all open connections drain — but a connected WebSocket keeps the TCP socket alive indefinitely. So if our graceful-WS-close lived in provider `shutdown()`, the HTTP-server-close `terminating` hook would hang forever on the WS connections and our `shutdown()` would never run.
+
+**The fix**: register our own `app.terminating(async () => { await xrpcServer.shutdown(graceMs) })` from inside provider `ready()`. Because `runReverse` runs hooks last-first and `ready()` runs after `HttpServerProcess.#monitorAppAndServer`, our hook runs first → we send 1001 frames, wait for the grace window, then force-terminate survivors → only then does the HTTP-server close hook get its chance, and at that point all WS sockets are gone so `nodeHttpServer.close()`'s callback fires promptly. Provider `shutdown()` itself is not used by Plan 04 (Plan 06's ace work might add a `shutdown()` for non-web envs, but that's out of scope here).
+
+**Concrete impact on Task 5:**
+
+- Step 3 changes from "add `shutdown()` method on the provider" to "register `app.terminating(...)` inside `ready()` after `xrpcServer.start()` resolves". The actual `XrpcServer.shutdown(graceMs?)` method (Steps 1 + 2) is unchanged.
+- `XrpcServer.shutdown()` retains its `Array.from(wss.clients)` snapshot iteration — `~/Development/git/github.com/websockets/ws/lib/websocket-server.js:441-447` confirms each client's `ws.on('close', ...)` calls `this.clients.delete(ws)` synchronously during teardown, so iterating without snapshotting risks skipping entries.
+- Test setup (Task 5 Step 4 + Task 6's helpers) doesn't change — `xrpcServer.shutdown()` is still the entrypoint in tests; the framework wiring only matters in real boot.
 
 **Single-handler design** (collapsed from the spec's `errorHandler` + `subscriptionErrorHandler` split): the consumer's `ExceptionHandler` subclass handles BOTH procedure/query and subscription paths via a single `handle(error, ctx)` method. The `ctx.lexicon.type` discriminator (`'xrpc_procedure'` / `'xrpc_query'` / `'xrpc_subscription'`) inside the body lets consumers branch when needed; in practice most don't. This removes the fall-through machinery (`getRegisteredSubscriptionErrorHandler` resolving to `getRegisteredErrorHandler` when no subscription handler is set) entirely.
 
@@ -39,7 +78,7 @@ The provider's `shutdown()` hook delegates to a new `XrpcServer.shutdown(graceMs
 ### Modify
 
 - `src/xrpc_server.ts` — widen `createXrpcExecutor`'s `deps` type to `{ operations, serializer, xrpc: XrpcService }`; replace the `// ERROR-REPORTING SEAM (Plan 04)` comments in both the procedure/query catch block and `wrapSubscriptionIterator`'s catch block with calls to the new `runConsumerHandler(xrpc, err, xrpcCtx)` helper (single source of truth for the `shouldReport → report → handle → REPORTED-stamp` sequence); add `XrpcServer.shutdown(graceMs?)` instance method; add `#shuttingDown` private field consulted by the upgrade wrapper installed in `#installWebSocketHandler`
-- `providers/provider.ts` — expand Plan 03's minimal provider: bind `XrpcService` in `boot()` (alongside the existing `XrpcRouter` binding); widen `ready()` to construct atcute's `XRPCRouter` with `handleException` + `handleSubscriptionException` hooks and to pass `xrpc` into `createXrpcExecutor`'s deps; add `shutdown()` that delegates to `XrpcServer.shutdown()`
+- `providers/provider.ts` — expand Plan 03's minimal provider: bind `XrpcService` in `boot()` (alongside the existing `XrpcRouter` binding); widen `ready()` to construct atcute's `XRPCRouter` with `handleException` (HTTP) + `onSocketError` (subscription telemetry) hooks, pass `xrpc` into `createXrpcExecutor`'s deps, and register an `app.terminating(async () => { await xrpcServer.shutdown() })` hook at the tail of `ready()` (Task 5; the provider does NOT add a `shutdown()` lifecycle method — see the second amendments block at the top of this plan for why)
 - `index.ts` — add public type export: `XrpcService` (`ExceptionHandler` class is already exported by Plan 01 Task 10)
 - `package.json` — add the `./services/xrpc` subpath export entry; add the matching `tsdown.entry` entry; bump devDeps if a new test-helper dep is needed (none anticipated)
 - `cspell.json` — add `gracefulShutdown` if cspell flags it (otherwise no change)
@@ -55,14 +94,14 @@ The provider's `shutdown()` hook delegates to a new `XrpcServer.shutdown(graceMs
 
 These verifications must pass before executing this plan. Don't run task subagents until each `[ ]` below is `[x]`.
 
-- [ ] Plans 01, 02, 03 are committed to `main` and `pnpm test` passes on a clean checkout. The minimal provider from Plan 03 Task 7b is in place at `providers/provider.ts` with `boot()` + `start()` + `ready()` lifecycle wired.
-- [ ] `cat providers/provider.ts` shows the Plan 03 minimal-provider shape: `register()` binds the `XrpcRouter` singleton, `boot()` installs the `router.xrpc` accessor on `Router.prototype`, `start()` commits the router, `ready()` (web-only) constructs the atcute `XRPCRouter` + executor + `XrpcServer`. (See Plan 03 § Task 7b for the install mechanism — `Router` isn't `Macroable`, so it's a direct `Object.defineProperty(Router.prototype, ...)`.)
-- [ ] `grep -n 'ERROR-REPORTING SEAM (Plan 04)' src/xrpc_server.ts` returns three lines: one in `createXrpcExecutor`'s `deps` type comment, one in the procedure/query catch block, one in `wrapSubscriptionIterator`'s catch block. If any are missing, Plan 03 didn't land cleanly — back out and verify Plan 03 before continuing.
-- [ ] **Verify atcute `XRPCRouterOptions` shape**: read `~/Development/git/github.com/mary-ext/atcute/packages/internal/xrpc-server/lib/router.ts` (on the `trunk` branch — see memory `atcute-repo-paths`) to confirm the `handleException` and `handleSubscriptionException` field names, signatures, and what atcute does by default when they're absent. The spec sketches them as wire-format encoding hooks — verify both: (a) their function signatures (specifically, what context object they receive), and (b) that throwing from inside one causes atcute to fall back to its default error encoding (vs. crashing the request). If the atcute API differs from the spec sketch, surface it as a finding before drafting Task 4's code — the rest of the plan keys off this shape.
-- [ ] **Verify `ws.WebSocketServer.clients` iteration is safe under concurrent close**: read `~/Development/git/github.com/websockets/ws/lib/websocket-server.js` (if cloned; otherwise `pnpm info ws repository` and reach via raw GitHub) to confirm that iterating `wss.clients` while clients are closing is safe (the spec sketch in Task 5 assumes it is). If iteration must use `Array.from(wss.clients)` to snapshot, note that as a Task 5 adjustment.
-- [ ] **Verify the `@adonisjs/core/services/server` singleton-accessor shape**: read `~/Development/git/github.com/adonisjs/core/services/server.ts` (on the `7.x` branch — see user CLAUDE.md AdonisJS section) to confirm the exact pattern (`import app from '@adonisjs/core/services/app'; let server; await app.booted(async () => { server = await app.container.make('server') }); export { server as default }`). Task 2's `services/xrpc.ts` must mirror this shape exactly — the export contract is what consumers depend on for `import xrpc from '...'` to give them an `XrpcService` instance synchronously after boot.
-- [ ] **Verify Adonis provider `shutdown()` ordering vs `Application.terminate()`**: read `~/Development/git/github.com/adonisjs/core/src/application.ts` on the `7.x` branch to confirm that provider `shutdown()` hooks run BEFORE the Node HTTP server's `.close()` is called (this is what gives our 1001 close-frame loop time to reach clients before the underlying TCP socket dies). If the ordering is the other way around, Task 5's shutdown sequence needs adjustment — likely registering a process `SIGTERM` listener separately, which is uglier. Either way, document the ordering finding in Task 5's commit message.
-- [ ] **Confirm Plan 01 amendment landed**: Plan 04's atcute `handleException` / `handleSubscriptionException` hooks (Task 4) and the executor catch blocks (Task 3) call `XrpcContext.get()` / `XrpcContext.getOrFail()`. Plan 01 currently defines `XrpcContext.getOrFail()`; the `get()` non-throwing variant was added as a Plan 01 amendment during Plan 04 drafting. Confirm `grep -n 'static get():' src/context.ts` returns a match before starting Task 4.
+- [x] Plans 01, 02, 03 are committed (on their respective branches; the lineage `main → plan-02-serializer → plan-03-dispatcher → plan-04-provider` accumulates until the chain-API migration completes — see `[[xrpc-package-spec-status]]`) and the minimal provider from Plan 03 Task 7b is in place at `providers/provider.ts` with `boot()` + `start()` + `ready()` lifecycle wired. Verified 2026-05-26 (resumption): branch tips `3ed1302` (plan-03-dispatcher), `ddf8bec` (plan-02-serializer), and the corresponding plan-01-foundation tip; `pnpm test` last green on plan-03-dispatcher.
+- [x] `providers/provider.ts` shows the Plan 03 minimal-provider shape: `register()` binds the `XrpcRouter` singleton, `boot()` installs the `router.xrpc` accessor on `Router.prototype`, `start()` commits the router, `ready()` (skips in `console` env) constructs the atcute `XRPCRouter` + executor + `XrpcServer`. (See Plan 03 § Task 7b for the install mechanism — `Router` isn't `Macroable`, so it's a direct `Object.defineProperty(Router.prototype, ...)` with `configurable: true`.) Verified 2026-05-26.
+- [x] `grep -n 'ERROR-REPORTING SEAM (Plan 04)' src/xrpc_server.ts` returns three lines: 251 (`createXrpcExecutor`'s `deps` type comment), 370 (procedure/query catch block), 423 (`wrapSubscriptionIterator`'s catch block). Verified 2026-05-26.
+- [x] **Verify atcute `XRPCRouterOptions` shape** (done 2026-05-26 — see _Amendments since 2026-05-26_ at the top): `XRPCRouterOptions` has `handleException` (HTTP, can customize response) + `onError` (HTTP telemetry) + `onSocketError` (WS telemetry). **No `handleSubscriptionException`.** Subscription wire-format customization is fixed: throw `XRPCSubscriptionError` → frame + `err.closeCode` close; throw anything else → close 1011 + invoke `onSocketError`. Task 4's design splits into `makeAtcuteHttpHook(xrpc)` (returns a `handleException` impl) + `makeSocketErrorObserver(xrpc)` (returns an `onSocketError` impl, telemetry-only).
+- [x] **Verify `ws.WebSocketServer.clients` iteration is safe under concurrent close**: confirmed 2026-05-26 from `~/Development/git/github.com/websockets/ws/lib/websocket-server.js`. `wss.clients` is a JS `Set` (line 136); each connected client's `ws.on('close', () => this.clients.delete(ws))` mutates the Set during teardown (lines 441–447). Iterating a `Set` that's being mutated mid-iteration is not a throw but the visit ordering vs removals is implementation-detail and skips entries whose slot has already been visited. **Task 5 must snapshot via `Array.from(wss.clients)` before iterating in the shutdown loop** — already in the Task 5 step body below.
+- [x] **Verify the `@adonisjs/core/services/server` singleton-accessor shape**: confirmed 2026-05-26 from `~/Development/git/github.com/adonisjs/core/services/server.ts`. The pattern is `let server: HttpServerService; await app.booted(async () => { server = await app.container.make('server') }); export { server as default }`. Two takeaways for Task 2: (1) uses `app.booted()` not `app.ready()` — important because `XrpcService` is bound in the provider's `boot()`, so `booted()` fires AFTER the binding is in place; (2) the in-tree services/server.ts uses a relative `./app.ts` import, but Task 2's consumer-facing `services/xrpc.ts` should use `@adonisjs/core/services/app` (the public package-exports form).
+- [x] **Verify Adonis provider `shutdown()` ordering vs `Application.terminate()`**: confirmed 2026-05-26 from `~/Development/git/github.com/adonisjs/application/src/application.ts:874` (`Application.terminate()` body) and `~/Development/git/github.com/adonisjs/core/src/ignitor/http.ts:76` (`HttpServerProcess.#monitorAppAndServer`). **The ordering is the OPPOSITE of what Task 5 originally assumed.** `Application.terminate()` runs `await this.#hooks.runner('terminating').runReverse(this)` BEFORE `await this.#providersManager.shutdown(true)`. The Node HTTP server's `.close()` is registered as a `terminating` hook in `HttpServerProcess.#monitorAppAndServer` — and `nodeHttpServer.close()`'s callback waits for all open connections to drain, but a connected WebSocket keeps the TCP socket alive. **Consequence**: if WS graceful-teardown lives in provider `shutdown()`, it never runs — the HTTP-server-close `terminating` hook hangs forever on the WS connections. **Fix**: register `app.terminating(async () => { await xrpcServer.shutdown() })` from inside provider `ready()`. Because `runReverse` runs hooks last-first and our `ready()` runs AFTER `HttpServerProcess.#monitorAppAndServer`, our hook runs FIRST in the reverse traversal → we get to send 1001 frames and let clients drain before the HTTP-server close hook is even invoked. See the second amendments block at the top of this plan ("Graceful WebSocket teardown registers on `app.terminating(...)`, not on provider `shutdown()`") for the design adjustment to Task 5.
+- [x] **Confirm Plan 01 amendment landed** (done 2026-05-26): `XrpcContext.get()` exists in `src/context.ts:25` alongside `getOrFail()`. Used by Plan 04 Task 4's atcute `handleException` hook (HTTP) and `onSocketError` observer (subscription telemetry), plus Task 3's executor catch blocks.
 
 ---
 
@@ -93,14 +132,15 @@ import type { ExceptionHandler } from './exception_handler.js'
 
 /**
  * Module marker stamped on errors after the consumer's handler has run
- * once, so atcute's `handleException` / `handleSubscriptionException`
- * hooks can skip re-invoking it on the way out (handler-side errors
- * traverse the executor catch FIRST, then atcute's hook — the dedup
- * keeps reporting idempotent without trusting reporters to be so).
+ * once. Used by atcute's HTTP-path `handleException` hook (Task 4's
+ * `makeAtcuteHttpHook`) to skip re-invoking the consumer handler when
+ * the executor catch already ran it. (Subscription-path handler-side
+ * errors don't need the dedup — atcute has no equivalent subscription
+ * hook; `wrapSubscriptionIterator`'s catch is the single report site.)
  *
  * The executor catch (Task 3) and the subscription wrapper catch stamp
- * this on the returned XrpcError before re-throwing. Plan 04's atcute
- * hooks (Task 4) check for it and short-circuit.
+ * this on the returned XrpcError before re-throwing. Plan 04 Task 4's
+ * `makeAtcuteHttpHook` (HTTP) checks for it and short-circuits.
  *
  * @internal
  */
@@ -391,8 +431,9 @@ import type { XrpcLexicon } from './types.js'
  * catch — single source of truth for the report → handle → mark sequence.
  *
  * Returns the XrpcError the caller should throw. Stamps the `REPORTED`
- * symbol so atcute's `handleException` / `handleSubscriptionException`
- * hooks (Plan 04 Task 4) skip a duplicate handler invocation.
+ * symbol so atcute's HTTP-path `handleException` hook (Plan 04 Task 4's
+ * `makeAtcuteHttpHook`) skips a duplicate handler invocation when the
+ * sanitized error bubbles up to atcute's exception handler.
  *
  * Fallback (no handler registered): wrap non-XrpcError as
  * InternalServerError with `{ cause }` — preserves the Plan 03 default
@@ -448,10 +489,12 @@ In `src/xrpc_server.ts`'s `wrapSubscriptionIterator`, locate the `// ERROR-REPOR
 } catch (err) {
   const xrpcError = await runConsumerHandler(xrpc, err, xrpcCtx)
 
-  // Translate XrpcError → XRPCSubscriptionError for atcute's
-  // handleSubscriptionException hook (configured in Task 4). The
-  // sanitized XrpcError from runConsumerHandler carries the wire-shape
-  // `errorName` + `message` we want.
+  // Translate XrpcError → XRPCSubscriptionError. Atcute has no
+  // configurable subscription-error hook — it inspects the thrown value:
+  // XRPCSubscriptionError → emit error frame + close with err.closeCode;
+  // anything else → close 1011 + invoke onSocketError (telemetry-only).
+  // The sanitized XrpcError from runConsumerHandler carries the wire-
+  // shape `errorName` + `message` we want for the frame.
   throw new XRPCSubscriptionError({
     error: xrpcError.errorName,
     message: xrpcError.message,
@@ -561,17 +604,19 @@ git commit -m "feat: run consumer ExceptionHandler from executor + subscription 
 
 **Files:**
 
-- Modify: `providers/provider.ts` — expand `boot()` to bind `XrpcService` alongside the existing `XrpcRouter` binding; expand `ready()` to construct atcute's `XRPCRouter` with `handleException` + `handleSubscriptionException` hooks and to pass `xrpc` into `createXrpcExecutor`'s deps
+- Modify: `providers/provider.ts` — expand `boot()` to bind `XrpcService` alongside the existing `XrpcRouter` binding; expand `ready()` to construct atcute's `XRPCRouter` with `handleException` (HTTP) + `onSocketError` (subscription telemetry) hooks and to pass `xrpc` into `createXrpcExecutor`'s deps
 - Modify: `tests/provider.spec.ts` — extend Plan 03 Task 7b's provider tests with the new bindings + ready-phase atcute hook verification
 
-**Why this exists:** Plan 03 Task 7b shipped a minimal provider whose only jobs were (a) bind `XrpcRouter` + install `router.xrpc` macro + commit the router and (b) construct + start `XrpcServer`. Plan 04 expands those hooks with the consumer-facing surface: `XrpcService` (consumer registers exception handlers against it via `services/xrpc`), and atcute's `handleException` / `handleSubscriptionException` hooks (so atcute-internal errors — not just handler errors — flow through the same `ExceptionHandler`).
+**Why this exists:** Plan 03 Task 7b shipped a minimal provider whose only jobs were (a) bind `XrpcRouter` + install `router.xrpc` macro + commit the router and (b) construct + start `XrpcServer`. Plan 04 expands those hooks with the consumer-facing surface: `XrpcService` (consumer registers exception handlers against it via `services/xrpc`), and atcute's `handleException` hook (so atcute-internal HTTP errors — not just handler errors — flow through the same `ExceptionHandler`) plus `onSocketError` telemetry for unexpected subscription failures.
 
-**Why both atcute hooks AND the executor seam reporting?** Two distinct error origins:
+**Why the asymmetric wiring** (HTTP gets `handleException`, subscription gets `onSocketError` + executor-internal seam): see _Amendments since 2026-05-26_ at the top of this plan. Atcute's API doesn't expose a subscription-equivalent of `handleException`. The subscription wire-format customization seam lives inside our own `wrapSubscriptionIterator`, which calls `runConsumerHandler` directly (Task 3). Atcute's `onSocketError` is telemetry-only and runs only for non-`XRPCSubscriptionError` throws — useful for logging unexpected subscription failures but not the primary customization point.
+
+**The two error origins:**
 
 1. **Handler errors** — thrown from the user's `handle(ctx)` or yielded-from generator. These traverse the executor's try/catch and `wrapSubscriptionIterator`'s catch. Both invoke `runConsumerHandler` (Task 3) which calls `handler.report()` + `handler.handle()`, stamps the returned `XrpcError` with `REPORTED`, and re-throws.
-2. **Atcute-internal errors** — thrown during request parsing, route matching, input/output validation, lexicon assertion. These don't traverse the executor's try/catch — atcute catches them itself and routes to `handleException` / `handleSubscriptionException`. Without wiring those hooks, these errors get atcute's default wire encoding but are NEVER seen by the consumer's `ExceptionHandler` — silent observability gap, no consumer-controlled sanitization.
+2. **Atcute-internal errors** (HTTP path only — atcute's subscription path has no extension point) — thrown during request parsing, route matching, input/output validation, lexicon assertion. These don't traverse the executor's try/catch — atcute catches them itself and routes to `handleException`. Without wiring this hook, these errors get atcute's default wire encoding but are NEVER seen by the consumer's `ExceptionHandler` — silent observability gap.
 
-Task 4 closes the gap. Both paths converge on a single `makeAtcuteHook(xrpc)` helper (used for both atcute hook positions); it skips when the error carries `REPORTED` (handler-side errors already ran the consumer handler in the executor catch), and otherwise runs `runConsumerHandler` just like the executor catch would.
+Task 4 closes the HTTP-side gap via `makeAtcuteHttpHook(xrpc)`. Subscription path doesn't need a separate hook — the consumer handler call inside `wrapSubscriptionIterator` covers handler-side errors, and atcute-internal subscription errors land in `onSocketError` as telemetry only. `makeSocketErrorObserver(xrpc)` exists for that path: it calls `handler.report(err, ctx)` if `shouldReport` is truthy, but does NOT call `handler.handle()` (no return path — atcute has already closed the socket with 1011) and does NOT throw.
 
 **Steps:**
 
@@ -632,16 +677,17 @@ export default class XrpcProvider implements ContainerProviderContract {
     const ws = createNodeWebSocket()
 
     // --- Plan 04: atcute hooks for observability of atcute-internal errors
-    // that don't traverse our executor's try/catch. Both hooks delegate to
-    // the same `makeAtcuteHook` because the consumer's single
-    // `ExceptionHandler.handle()` covers both paths — the consumer
-    // discriminates with `ctx?.lexicon.type` if they care.
+    // that don't traverse our executor's try/catch. Asymmetric wiring per
+    // the Amendments section at the top of this plan — atcute exposes
+    // `handleException` (HTTP, can customize the response) but only
+    // `onSocketError` (telemetry) for subscriptions. Subscription-path
+    // customization happens inside `wrapSubscriptionIterator`'s catch
+    // (Task 3's runConsumerHandler call).
     // ---
-    const atcuteHook = makeAtcuteHook(xrpc)
     const atcuteRouter = new XRPCRouter({
       websocket: ws.adapter,
-      handleException: atcuteHook,
-      handleSubscriptionException: atcuteHook,
+      handleException: makeAtcuteHttpHook(xrpc),
+      onSocketError: makeSocketErrorObserver(xrpc),
     })
 
     // --- Plan 03 widened (Plan 04): pass xrpc into the executor deps so
@@ -667,35 +713,26 @@ export default class XrpcProvider implements ContainerProviderContract {
 }
 
 /**
- * Build the atcute hook used for both `handleException` and
- * `handleSubscriptionException`. Single helper — the consumer's
- * `ExceptionHandler.handle()` covers both paths.
+ * Build the atcute `handleException` hook (HTTP path). Runs the consumer's
+ * registered ExceptionHandler against the error and throws the sanitized
+ * XrpcError for atcute's wire encoder to produce the response body.
  *
- * Two responsibilities:
+ * **Dedup** (REPORTED symbol): handler-side errors enter the executor's
+ * catch FIRST (Task 3's `runConsumerHandler`). The executor calls
+ * `handler.report` + `handler.handle`, stamps the returned XrpcError with
+ * `REPORTED`, and throws — atcute then sees the (already-sanitized)
+ * XrpcError and calls THIS hook. We check the symbol and short-circuit so
+ * reporting/handling isn't duplicated. Errors raised inside atcute before
+ * reaching our executor (request parsing, lexicon assertion, route
+ * matching) have no `REPORTED` stamp and get the full handler invocation
+ * here.
  *
- * 1. Run the consumer's registered ExceptionHandler against the error so
- *    that atcute-internal errors (request parsing, lexicon assertion,
- *    route matching) — which don't traverse our executor's try/catch —
- *    still reach the consumer's reporter and sanitizer.
- *
- * 2. Throw the sanitized XrpcError so atcute's wire encoder produces a
- *    well-formed response body. atcute uses the thrown value directly.
- *
- * **Dedup** (REPORTED symbol): handler-side errors enter our executor
- * catch FIRST. The executor calls `handler.report` + `handler.handle`,
- * stamps the returned XrpcError with `REPORTED`, and throws — atcute
- * then sees the (already-sanitized) XrpcError and calls THIS hook. We
- * check the symbol and short-circuit so reporting/handling isn't
- * duplicated. Errors raised inside atcute before reaching our executor
- * have no `REPORTED` stamp and get the full handler invocation here.
- *
- * **XrpcContext.get()** returns the active context (HTTP path: executor
- * had already entered the ALS; subscription path: each .next() runs
- * inside als.run). Atcute-internal errors raised before the executor
- * runs have no XrpcContext — `get()` returns undefined and we pass null
- * to the consumer's handler.
+ * **XrpcContext.get()** returns the active context if the executor had
+ * entered the ALS before throwing (HTTP handler-side errors). Atcute-
+ * internal errors raised before the executor runs have no XrpcContext —
+ * `get()` returns undefined and we pass null to the consumer's handler.
  */
-function makeAtcuteHook(xrpc: XrpcService) {
+function makeAtcuteHttpHook(xrpc: XrpcService) {
   return async (err: unknown): Promise<never> => {
     if ((err as any)?.[REPORTED]) {
       throw err
@@ -730,6 +767,45 @@ function makeAtcuteHook(xrpc: XrpcService) {
     const sanitized = await handler.handle(err, xrpcCtx)
     ;(sanitized as any)[REPORTED] = true
     throw sanitized
+  }
+}
+
+/**
+ * Build the atcute `onSocketError` observer (subscription path). Atcute
+ * invokes this AFTER it has closed the socket with 1011 for non-
+ * `XRPCSubscriptionError` throws — telemetry-only, no return path.
+ * Calls the consumer handler's `report` (when `shouldReport` is truthy)
+ * so observability survives atcute-internal subscription failures.
+ *
+ * Does NOT call `handler.handle()` — the close frame has already gone,
+ * there's nothing to sanitize for the wire. Does NOT throw — atcute's
+ * cleanup path is finalized at this point.
+ *
+ * Subscription-path handler-side errors (thrown from the user's async
+ * generator) go through `wrapSubscriptionIterator`'s catch block via
+ * `runConsumerHandler` (Task 3) BEFORE atcute sees them — those land
+ * here only if `runConsumerHandler` itself somehow throws past its own
+ * try/catch (shouldn't happen, but the dedup guard handles it cleanly).
+ */
+function makeSocketErrorObserver(xrpc: XrpcService) {
+  return async ({ error, request }: { error: unknown; request: Request }): Promise<void> => {
+    void request
+    if ((error as any)?.[REPORTED]) {
+      return
+    }
+
+    const handler = await xrpc.getRegisteredErrorHandler()
+    if (!handler) return
+
+    const xrpcCtx = XrpcContext.get() ?? null
+
+    if (handler.shouldReport(error)) {
+      try {
+        await handler.report(error, xrpcCtx)
+      } catch {
+        // Telemetry hook is fire-and-forget; swallow reporter failures.
+      }
+    }
   }
 }
 ```
@@ -768,12 +844,12 @@ git commit -m "feat: expand provider with XrpcService binding + atcute exception
 
 ---
 
-## Task 5: `XrpcServer.shutdown()` + provider `shutdown()` hook — graceful WebSocket teardown
+## Task 5: `XrpcServer.shutdown()` + `app.terminating(...)` registration — graceful WebSocket teardown
 
 **Files:**
 
 - Modify: `src/xrpc_server.ts` — add `#shuttingDown` private field; modify `#installWebSocketHandler`'s upgrade wrapper to no-op when `#shuttingDown`; add `XrpcServer.shutdown(graceMs?)` method
-- Modify: `providers/provider.ts` — add `shutdown()` method that delegates to `XrpcServer.shutdown()`
+- Modify: `providers/provider.ts` — at the tail of `ready()` (after `xrpcServer.start()` resolves), register `app.terminating(async () => { await xrpcServer.shutdown() })` so the graceful-WS-close hook runs ahead of the Node HTTP server's own `terminating`-registered `.close()` (see pre-flight finding and the second amendments block above).
 - Create: `tests/provider_shutdown.spec.ts` — exercise the close-frame send + grace period + force-terminate fallback
 
 **Why this exists:** Adonis's graceful-shutdown machinery drains in-flight HTTP requests but doesn't touch WebSocket connections. Without an explicit `shutdown()`, on SIGTERM / dev-reload:
@@ -787,7 +863,7 @@ The shutdown sequence: stop accepting new upgrades → send 1001 (Going Away) to
 
 **`graceMs` configuration**: hardcoded at 3000ms (3 seconds) for this plan. Rationale: this is well-trodden territory — Kubernetes' default `terminationGracePeriodSeconds` is 30s, of which the SIGTERM-to-SIGKILL window is most; 3s of that going to WS drain leaves plenty for the HTTP-side drain. A consumer with unusual subscription handler patterns (e.g. very long-running per-message processing that the abort signal can't interrupt mid-flight) might want to tune this — when that consumer turns up, we add `defineConfig({ shutdownGraceMs: 5000 })` as a non-breaking field. Until then, hardcoded keeps the config surface narrow.
 
-**Why provider `shutdown()` runs before Adonis's HTTP server `.close()`:** verified in the pre-flight checks. Per Adonis 7.x's `Application.terminate()` flow, provider `shutdown()` hooks fire first, then the HTTP server closes. This is what gives our 1001 close-frame loop time to reach clients before the underlying TCP socket dies. If the pre-flight check found the ordering is reversed, this task needs a different approach (likely a process `SIGTERM` listener registered in `ready()` that pre-empts the shutdown sequence) — write that variant in the catch-up notes below.
+**Why this uses `app.terminating(...)`, not provider `shutdown()`:** verified in the pre-flight checks. Per Adonis 7.x's `Application.terminate()` flow, `terminating` hooks run BEFORE `providersManager.shutdown(true)`, and the Node HTTP server's `.close()` is itself registered as a `terminating` hook by `HttpServerProcess.#monitorAppAndServer`. `nodeHttpServer.close()` waits for all open connections to drain — but a WebSocket connection keeps the underlying TCP socket alive forever. If our graceful-WS-close lived in provider `shutdown()`, the HTTP-server-close hook would never resolve and our `shutdown()` would never get called. Registering our own `terminating` hook from `ready()` puts us ahead of the HTTP-server close in the LIFO traversal: we send 1001, wait, force-terminate, and only then does the HTTP-server close hook get its turn — by which point all sockets are gone and it resolves promptly. See the second amendments block at the top of this plan for the full derivation.
 
 **Steps:**
 
@@ -888,19 +964,24 @@ Notes:
 - The 50ms poll interval is a balance: tight enough to catch fast acks (typical close round-trips are 5–20ms on localhost, 30–100ms on real networks), loose enough not to spin uselessly. Don't micro-tune.
 - Aborts: this plan does NOT add an explicit `AbortController`-per-subscription tracked on `XrpcServer`. atcute's WebSocket adapter wires the per-connection signal into the `XrpcContext.signal` already (Plan 03 Task 4 verified this against atcute trunk); when the underlying socket closes (either from our 1001 frame or from `.terminate()`), atcute fires that signal, which causes well-behaved handler generators to exit their `for await` loops. If a handler doesn't honor the signal (e.g. it's blocked in a `await someInfiniteDbCall()` with no `signal` parameter), it stays stuck — `.terminate()` only kills the socket; it doesn't unwind the JS generator. That's a handler bug, not something this layer can fix.
 
-- [ ] **Step 3: Add `shutdown()` to the provider**
+- [ ] **Step 3: Register the graceful-WS-close `terminating` hook from `ready()`**
 
-In `providers/provider.ts`:
+In `providers/provider.ts`, at the tail of `ready()` — after `xrpcServer.start()` resolves and the container binding is in place:
 
 ```ts
-async shutdown() {
-  if (this.app.getEnvironment() !== 'web') return
-  const xrpcServer = await this.app.container.make(XrpcServer)
+// Register AFTER `HttpServerProcess.#monitorAppAndServer` has registered
+// its own `terminating` hook (the one that calls `nodeHttpServer.close()`).
+// `app.terminate()` runs terminating hooks via `runReverse` (LIFO), so
+// last-registered runs first — we want to send 1001 frames and drain WS
+// clients BEFORE the HTTP server tries to close (which would otherwise
+// hang waiting for those same WS connections to drain). See the second
+// amendments block at the top of this plan for the full ordering analysis.
+this.app.terminating(async () => {
   await xrpcServer.shutdown()
-}
+})
 ```
 
-The env gate matches `ready()` — outside web envs (`console` / `test`), `XrpcServer` was never bound, so resolving it would throw `RuntimeException` from the container. The gate avoids that.
+No env gate needed — `ready()` already short-circuits in `console` env (line 95 of `providers/provider.ts`), so the `terminating` registration only happens in environments where `xrpcServer` exists. The provider class itself does NOT add a `shutdown()` lifecycle method in Plan 04; the work is entirely on the `terminating` hook.
 
 - [ ] **Step 4: Write `tests/provider_shutdown.spec.ts`**
 
@@ -1200,7 +1281,7 @@ Walk the prompt:
 
 - Selected package: `@thisismissem/adonisjs-atproto-xrpc`
 - Bump type: **minor** (v0.x, new public surface: `./services/xrpc` subpath, `XrpcService` type, provider lifecycle expansion, graceful WS shutdown)
-- Summary: `Expand XrpcProvider with the XrpcService facade — register an ExceptionHandler subclass via xrpc.errorHandler(() => import('#exceptions/xrpc_handler')) from start/kernel.ts (mirroring server.errorHandler from @adonisjs/core/services/server). The single registration covers both procedure/query and subscription paths; consumers branch on ctx?.lexicon.type inside their handle() body when path-specific behavior is needed. atcute's handleException + handleSubscriptionException are wired so atcute-internal errors (parse failures, lexicon assertion) flow through the same consumer handler as handler-side errors — REPORTED-symbol dedupe prevents double-invocation when both paths see the same error. Provider shutdown() drains in-flight WebSocket subscriptions with a 1001 close frame and a 3s grace window before .terminate()ing survivors — clients disconnect cleanly on SIGTERM / dev-reload instead of hanging until ping timeout. (Spec § "Container bindings — HttpContext.xrpc" was deliberately dropped — see the plan document for why.)`
+- Summary: `Expand XrpcProvider with the XrpcService facade — register an ExceptionHandler subclass via xrpc.errorHandler(() => import('#exceptions/xrpc_handler')) from start/kernel.ts (mirroring server.errorHandler from @adonisjs/core/services/server). The single registration covers both procedure/query and subscription paths; consumers branch on ctx?.lexicon.type inside their handle() body when path-specific behavior is needed. atcute's HTTP handleException hook is wired (via makeAtcuteHttpHook) so atcute-internal HTTP errors (parse failures, lexicon assertion) flow through the same consumer handler as handler-side errors — REPORTED-symbol dedupe prevents double-invocation. Subscription-path errors use the executor-internal wrapSubscriptionIterator catch (atcute exposes no subscription-equivalent of handleException); atcute's onSocketError observer (via makeSocketErrorObserver) provides telemetry for unexpected subscription failures. Provider shutdown() drains in-flight WebSocket subscriptions with a 1001 close frame and a 3s grace window before .terminate()ing survivors — clients disconnect cleanly on SIGTERM / dev-reload instead of hanging until ping timeout. (Spec § "Container bindings — HttpContext.xrpc" was deliberately dropped — see the plan document for why.)`
 
 - [ ] **Step 2: Commit the changeset**
 
@@ -1220,7 +1301,7 @@ Run through this checklist before handing off:
   - `services/xrpc.ts` singleton accessor (mirroring `@adonisjs/core/services/server`) — Task 2 ✓
   - Executor + subscription-wrapper catch blocks run the consumer's `ExceptionHandler` (`report` + `handle`) via `runConsumerHandler` — Task 3 ✓
   - Provider `boot()` binds XrpcService — Task 4 ✓
-  - Provider `ready()` widens atcute XRPCRouter construction with a single `makeAtcuteHook` reused for both `handleException` and `handleSubscriptionException` — Task 4 ✓
+  - Provider `ready()` widens atcute XRPCRouter construction with `handleException: makeAtcuteHttpHook(xrpc)` + `onSocketError: makeSocketErrorObserver(xrpc)` — asymmetric per the _Amendments since 2026-05-26_ section (atcute has no subscription equivalent of `handleException`; subscription customization lives in `wrapSubscriptionIterator`'s catch via `runConsumerHandler`) — Task 4 ✓
   - Provider `ready()` widens executor construction with `xrpc` dep — Task 4 ✓
   - Provider `shutdown()` graceful WS teardown — Task 5 ✓
   - Public exports (`XrpcService` type + `./services/xrpc` subpath; `ExceptionHandler` class from Plan 01) — Task 7 ✓
@@ -1228,15 +1309,15 @@ Run through this checklist before handing off:
   - Spec's `errorHandler` + `subscriptionErrorHandler` split — **deliberately collapsed** to a single `errorHandler` registration; consumer's `ExceptionHandler.handle()` discriminates via `ctx?.lexicon.type` when path-specific behavior is needed. Rationale: see "Single-handler design" in Architecture. The fall-through complexity (`getRegisteredSubscriptionErrorHandler` resolving the regular handler when no subscription one is set) is gone.
   - Spec § _Container bindings — HttpContext.xrpc_ — **intentionally NOT implemented**; rationale in the "Why no HttpContext.xrpc getter" paragraph in Architecture. Future spec-amendment pass should drop the section.
 
-- [ ] **Type consistency:** `ExceptionHandler` (from Plan 01) ships `shouldReport(error): boolean`, `report(error, ctx: XrpcContext<XrpcLexicon> | null): Promise<void>`, and `handle(error, ctx: XrpcContext<XrpcLexicon> | null): Promise<XrpcError>`. `ctx` is nullable because atcute-internal errors fire before the executor materializes an `XrpcContext`. `XrpcService` constructor takes `app: ApplicationService`; `getRegisteredErrorHandler()` returns `Promise<ExceptionHandler | null>`. `createXrpcExecutor`'s `deps` widens to `{ operations, serializer, xrpc: XrpcService }`. `wrapSubscriptionIterator` signature widens to `(iterable, xrpcCtx, xrpc, serializer)`. `runConsumerHandler(xrpc, err, xrpcCtx)` returns `Promise<XrpcError>` and stamps the `REPORTED` symbol on the returned error. `makeAtcuteHook(xrpc)` returns `(err: unknown) => Promise<never>` (always throws). `XrpcServer.shutdown(graceMs?: number): Promise<void>` — `graceMs` defaults to 3000. `XrpcContext.get()` returns `XrpcContext<XrpcLexicon> | undefined` (added via Plan 01 amendment alongside the existing `getOrFail()`).
+- [ ] **Type consistency:** `ExceptionHandler` (from Plan 01) ships `shouldReport(error): boolean`, `report(error, ctx: XrpcContext<XrpcLexicon> | null): Promise<void>`, and `handle(error, ctx: XrpcContext<XrpcLexicon> | null): Promise<XrpcError>`. `ctx` is nullable because atcute-internal errors fire before the executor materializes an `XrpcContext`. `XrpcService` constructor takes `app: ApplicationService`; `getRegisteredErrorHandler()` returns `Promise<ExceptionHandler | null>`. `createXrpcExecutor`'s `deps` widens to `{ operations, serializer, xrpc: XrpcService }`. `wrapSubscriptionIterator` signature widens to `(iterable, xrpcCtx, xrpc, serializer)`. `runConsumerHandler(xrpc, err, xrpcCtx)` returns `Promise<XrpcError>` and stamps the `REPORTED` symbol on the returned error. `makeAtcuteHttpHook(xrpc)` returns `(err: unknown) => Promise<never>` (always throws — atcute's `handleException` signature). `makeSocketErrorObserver(xrpc)` returns `(ctx: { error: unknown; request: Request }) => Promise<void>` (telemetry only — never throws, no return value used). `XrpcServer.shutdown(graceMs?: number): Promise<void>` — `graceMs` defaults to 3000. `XrpcContext.get()` returns `XrpcContext<XrpcLexicon> | undefined` (added via Plan 01 amendment alongside the existing `getOrFail()`).
 
 - [ ] **No placeholder text:** Grep for `TODO`, `FIXME`, `TBD` in the plan. Expected: none. Plan 04's `defineConfig({ shutdownGraceMs })` deferral is documented inline (Task 5 intro) as a deliberate future-addition decision, not a TODO.
 
-- [ ] **No double-report regressions:** The `REPORTED` symbol mechanism is the only thing keeping handler-side errors from being run twice through the consumer's `ExceptionHandler` (once by the executor catch / subscription wrapper catch via `runConsumerHandler`, once by atcute's `handleException` via `makeAtcuteHook`). `runConsumerHandler` stamps the returned `XrpcError` with `REPORTED` before throwing; `makeAtcuteHook` checks for `REPORTED` first and short-circuits. The plan's Task 6 tests cover this via the `assert.lengthOf(reportCalls, 1, 'reporter fired exactly once (REPORTED-symbol dedup)')` assertion. If a refactor changes either the stamp or the check, that assertion catches the regression.
+- [ ] **No double-report regressions (HTTP path):** The `REPORTED` symbol mechanism is the only thing keeping HTTP handler-side errors from being run twice through the consumer's `ExceptionHandler` (once by the executor catch via `runConsumerHandler`, once by atcute's `handleException` via `makeAtcuteHttpHook`). `runConsumerHandler` stamps the returned `XrpcError` with `REPORTED` before throwing; `makeAtcuteHttpHook` checks for `REPORTED` first and short-circuits. `makeSocketErrorObserver` also checks the symbol defensively, though subscription-path errors should normally not reach atcute's `onSocketError` once `runConsumerHandler` ran in `wrapSubscriptionIterator`'s catch (the sanitized error gets translated to `XRPCSubscriptionError` and emitted as a frame, not bubbled through `onSocketError`). The plan's Task 6 tests cover this via the `assert.lengthOf(reportCalls, 1, 'reporter fired exactly once (REPORTED-symbol dedup)')` assertion. If a refactor changes either the stamp or the check, that assertion catches the regression.
 
 - [ ] **No HttpContext.xrpc references in code or tests:** Grep for `HttpContext.xrpc`, `installHttpContextGetter`, `http_context.ts`, `provider_http_context_xrpc` in the plan. Expected: zero matches in task bodies (the Architecture section and self-review item above intentionally mention them in explanatory text).
 
-- [ ] **No `subscriptionErrorHandler` / `XrpcExceptionHandler` references:** Grep for `subscriptionErrorHandler`, `XrpcExceptionHandler`, `getRegisteredSubscriptionErrorHandler`, `makeHandleException`, `makeHandleSubscriptionException` in Plan 04 task bodies. Expected: zero matches — those names belonged to the previous two-handler-with-fall-through design and the split atcute-hook helpers. The collapsed design uses `ExceptionHandler` (Plan 01), `getRegisteredErrorHandler`, and `makeAtcuteHook`.
+- [ ] **No `subscriptionErrorHandler` / `XrpcExceptionHandler` / `handleSubscriptionException` references in code:** Grep for `subscriptionErrorHandler`, `XrpcExceptionHandler`, `getRegisteredSubscriptionErrorHandler`, `handleSubscriptionException`, `makeAtcuteHook` (the pre-amendment single helper), `makeHandleException`, `makeHandleSubscriptionException` in Plan 04 task bodies. Expected: zero matches in code blocks (the _Amendments since 2026-05-26_ explanatory text mentions `handleSubscriptionException` to document its absence). The collapsed + amendment-corrected design uses `ExceptionHandler` (Plan 01), `getRegisteredErrorHandler`, `makeAtcuteHttpHook` (HTTP), and `makeSocketErrorObserver` (subscription telemetry).
 
 - [ ] **No Plan 05 / auth references:** Grep for `XrpcAuth`, `serviceAuth`, `ServiceJwtVerifier`, `Plan 05` in the plan. Expected: zero matches. (Per the implementation-scope note at the top: auth is intentionally absent from this plan series.)
 

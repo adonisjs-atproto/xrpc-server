@@ -128,5 +128,9 @@
     "onlyBuiltDependencies": [
       "better-sqlite3"
     ]
+  },
+  "dependencies": {
+    "@atcute/lexicons": "^2.0.0",
+    "@poppinss/macroable": "^1.1.2"
   }
 }

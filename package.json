@@ -161,7 +161,7 @@
     "@atcute/cbor": "^2.3.3",
     "@atcute/lexicons": "^2.0.0",
     "@atcute/xrpc-server": "^2.0.0",
-    "@atcute/xrpc-server-node": "^2.0.0",
+    "@atcute/xrpc-server-node": "^2.1.0",
     "@poppinss/exception": "^1.2.3",
     "@poppinss/macroable": "^1.1.2",
     "light-my-websocket": "^0.1.0",

@@ -18,8 +18,8 @@ importers:
         specifier: ^2.0.0
         version: 2.0.0(@atcute/cid@2.4.1)(@atcute/lexicons@2.0.0)(typescript@5.9.3)
       '@atcute/xrpc-server-node':
-        specifier: ^2.0.0
-        version: 2.0.0(@atcute/xrpc-server@2.0.0(@atcute/cid@2.4.1)(@atcute/lexicons@2.0.0)(typescript@5.9.3))
+        specifier: ^2.1.0
+        version: 2.1.0(@atcute/xrpc-server@2.0.0(@atcute/cid@2.4.1)(@atcute/lexicons@2.0.0)(typescript@5.9.3))
       '@poppinss/exception':
         specifier: ^1.2.3
         version: 1.2.3
@@ -407,8 +407,8 @@ packages:
   '@atcute/util-text@1.3.1':
     resolution: {integrity: sha512-MRgJXkx67znuBXuoAYCJkBZyd3OApL7zZlNf5kXhuoCXcdiu1nblRDycYTADSkym4epBSQWxh26kmI9sewaq6A==}
 
-  '@atcute/xrpc-server-node@2.0.0':
-    resolution: {integrity: sha512-S9eMNHqW8YhJAG47m9sPuaY28lzDibAvuUs1B+qS/UUltfsk5F9YNr9sVU5Ex8ewRfyaup/wL5dSQZQ5yVBZaA==}
+  '@atcute/xrpc-server-node@2.1.0':
+    resolution: {integrity: sha512-Jssp51ZKvZjphBHMtnNfU2EOzXhioRp6+7prrswtAJEhMaBkbUfiG37+BS4OCBHfbhMZXGCrwhu35k6AeIKyYQ==}
     peerDependencies:
       '@atcute/xrpc-server': ^2.0.0
 
@@ -3544,7 +3544,7 @@ snapshots:
     dependencies:
       unicode-segmenter: 0.14.5
 
-  '@atcute/xrpc-server-node@2.0.0(@atcute/xrpc-server@2.0.0(@atcute/cid@2.4.1)(@atcute/lexicons@2.0.0)(typescript@5.9.3))':
+  '@atcute/xrpc-server-node@2.1.0(@atcute/xrpc-server@2.0.0(@atcute/cid@2.4.1)(@atcute/lexicons@2.0.0)(typescript@5.9.3))':
     dependencies:
       '@atcute/xrpc-server': 2.0.0(@atcute/cid@2.4.1)(@atcute/lexicons@2.0.0)(typescript@5.9.3)
       ws: 8.21.0

@@ -22,7 +22,7 @@
 
 import type http from 'node:http'
 import { ServerResponse } from 'node:http'
-import type { Socket } from 'node:net'
+import type { Duplex } from 'node:stream'
 import { RuntimeException } from '@adonisjs/core/exceptions'
 import type { ApplicationService } from '@adonisjs/core/types'
 import type { Server as AdonisServer } from '@adonisjs/core/http'
@@ -71,41 +71,41 @@ export class XrpcServer {
   #shuttingDown = false
 
   /**
-   * Atcute's captured 'upgrade' listener, snipped from the Node server and
-   * stored here so the wrapper field `#upgradeListener` can delegate to it
-   * after the `#shuttingDown` guard. Populated by `#installWebSocketHandler`
-   * before any upgrades can arrive.
+   * Atcute's bare 'upgrade' listener, obtained from `ws.createUpgradeListener`
+   * (@atcute/xrpc-server-node@2.1.0+). Stored here so `#upgradeListener` can
+   * delegate to it after injecting RequestContext + checking `#shuttingDown`.
+   * Populated by `#installWebSocketHandler` before any upgrades can arrive.
    */
   #atcuteUpgradeListener:
-    | ((req: http.IncomingMessage, socket: Socket, head: Buffer) => Promise<void>)
+    | ((req: http.IncomingMessage, socket: Duplex, head: Buffer) => Promise<void>)
     | null = null
 
   /**
-   * The upgrade wrapper registered on the Node server. Checks `#shuttingDown`
-   * first — when `shutdown()` sets the flag, in-flight upgrade negotiations
-   * are rejected (socket destroyed) so new clients don't connect during the
-   * grace window. On the normal path, delegates to `#atcuteUpgradeListener`
-   * after injecting the `RequestContext` into `requestContextStore`.
+   * The upgrade wrapper registered on the Node server. URL-filters first so
+   * the `#shuttingDown` guard is scoped to XRPC connections only (non-XRPC
+   * upgrades — Vite HMR, in-app WS routes — pass through immediately).
+   * On the XRPC path, rejects new connections during shutdown, then injects
+   * `RequestContext` into `requestContextStore` before delegating to atcute.
    *
    * Defined as a class field so `this` is lexically bound and the listener
-   * can be referenced (for `removeListener`) in shutdown without needing a
-   * stable outside reference.
+   * identity is stable for `removeListener` in shutdown.
    */
   #upgradeListener = async (
     req: http.IncomingMessage,
-    socket: Socket,
+    socket: Duplex,
     head: Buffer
   ): Promise<void> => {
+    // Not an XRPC path — let other listeners (Vite HMR, in-app WS) handle.
+    // `createUpgradeListener` guards this too, but checking here keeps the
+    // #shuttingDown logic scoped to XRPC connections only.
+    if (!req.url?.startsWith('/xrpc/')) return
+
     if (this.#shuttingDown) {
       // Reject the upgrade by destroying the socket. The handshake hasn't
       // completed yet, so there's no WebSocket frame to send — destroying
       // the underlying TCP socket is the right signal. The client sees
       // ECONNRESET and should retry against the new pod (post-shutdown).
       socket.destroy()
-      return
-    }
-    if (!req.url?.startsWith('/xrpc/')) {
-      // Not ours — let other 'upgrade' listeners handle.
       return
     }
     const synthRes = new ServerResponse(req)
@@ -169,39 +169,22 @@ export class XrpcServer {
 
   /**
    * Install the Node server 'upgrade' listener for the XRPC subscription
-   * dispatch path. Snips atcute's auto-registered listener and re-registers
-   * a URL-filtering wrapper so non-XRPC upgrades (Vite HMR, app-defined WS
-   * endpoints) pass through to other listeners untouched.
+   * dispatch path.
    *
-   * TODO (upstream): file an issue against `mary-ext/atcute` adding an
-   * optional `urlPredicate: (req: IncomingMessage) => boolean` to
-   * `createNodeWebSocket`. With that, this method collapses to a single
-   * `injectWebSocket` call + a `urlPredicate` argument.
+   * @atcute/xrpc-server-node@2.1.0 added `createUpgradeListener` — it returns
+   * the bare listener without attaching it to the server, expressly so callers
+   * can wrap it in their own context (e.g. `AsyncLocalStorage.run`) before
+   * delegating. That is exactly what `#upgradeListener` does here: inject
+   * `RequestContext` into `requestContextStore` and guard `#shuttingDown`
+   * before calling the atcute listener.
+   *
+   * `createUpgradeListener` internally filters to `/xrpc/*` — non-XRPC
+   * upgrades are returned early so other listeners (Vite HMR, in-app WS
+   * routes) remain unaffected. `#upgradeListener` redundantly checks the
+   * prefix too, so the `#shuttingDown` path is scoped to XRPC connections.
    */
   #installWebSocketHandler(nodeServer: http.Server, _appServer: AdonisServer): void {
-    // Let atcute register its 'upgrade' listener, then capture it and
-    // immediately remove it. We verify the listener-count delta is exactly 1
-    // so we fail loudly if atcute's internals change (e.g. registers multiple
-    // listeners or uses `prependListener`).
-    const beforeCount = nodeServer.listenerCount('upgrade')
-    this.#ws.injectWebSocket(nodeServer, this.#router)
-    const upgradeListeners = nodeServer.listeners('upgrade')
-    const addedCount = upgradeListeners.length - beforeCount
-    const atcuteListener = upgradeListeners.at(-1) as any
-    if (addedCount !== 1 || typeof atcuteListener !== 'function') {
-      throw new RuntimeException(
-        `@atcute/xrpc-server-node.injectWebSocket added ${addedCount} upgrade listeners (expected 1); the snip-and-wrap design in XrpcServer.#installWebSocketHandler needs updating.`
-      )
-    }
-    nodeServer.removeListener('upgrade', atcuteListener)
-
-    // Store atcute's listener so the class-field `#upgradeListener` can
-    // delegate to it after injecting RequestContext + checking #shuttingDown.
-    this.#atcuteUpgradeListener = atcuteListener
-
-    // Register the single wrapping listener. Non-XRPC upgrades pass through;
-    // shutting-down state rejects new clients; #upgradeListener handles the
-    // rest including RequestContext injection and atcute delegation.
+    this.#atcuteUpgradeListener = this.#ws.createUpgradeListener(this.#router)
     nodeServer.on('upgrade', this.#upgradeListener)
   }
 

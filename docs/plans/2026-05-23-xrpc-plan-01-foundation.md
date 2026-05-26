@@ -1,6 +1,8 @@
 # XRPC Plan 01 — Core Foundation Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+>
+> **Model:** Claude Sonnet (current generation) — the design and audit work is settled in the spec and plans; execution is mechanical enough that Opus is overkill.
 
 **Goal:** Ship the foundational primitives the rest of the package builds on — lexicon types, error hierarchy, config helper, route declaration builders, runtime context types, and the test factory — without any auth surface and without the serializer.
 

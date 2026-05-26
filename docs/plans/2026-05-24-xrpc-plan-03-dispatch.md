@@ -1,6 +1,8 @@
 # XRPC Plan 03 — Dispatch Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+>
+> **Model:** Claude Sonnet (current generation) — the design and audit work is settled in the spec and plans; execution is mechanical enough that Opus is overkill.
 
 **Goal:** Ship the dispatch layer — the shared executor that drives every registered XRPC handler, `XrpcServer` that owns the `@atcute/xrpc-server` `XRPCRouter` + WebSocket adapter, and `XrpcDispatchMiddleware` that intercepts `/xrpc/*` HTTP requests. After this plan, a hand-constructed `XrpcRouter` + `XrpcServer` pair can dispatch real HTTP procedures, HTTP queries, and WebSocket subscriptions end-to-end — without provider lifecycle and without error-reporter integration. Plan 04 (provider) layers those on top by splicing into the single error-reporting seam left here.
 

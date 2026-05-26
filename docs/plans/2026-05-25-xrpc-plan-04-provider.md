@@ -1,6 +1,8 @@
 # XRPC Plan 04 — Provider Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+>
+> **Model:** Claude Sonnet (current generation) — the design and audit work is settled in the spec and plans; execution is mechanical enough that Opus is overkill.
 
 **Goal:** Expand Plan 03's minimal provider into the full `XrpcProvider` + `XrpcService` facade. After this plan, consumers register their `ExceptionHandler` subclass (from `app/exceptions/xrpc_handler.ts` — the stub published by Plan 01's configure command) via `xrpc.errorHandler(() => import('#exceptions/xrpc_handler'))` in `start/kernel.ts`, atcute's `XRPCRouter` is constructed with `handleException` / `handleSubscriptionException` hooks so atcute-internal errors (parse failures, route mismatches) flow through the same handler as handler-side errors, and the provider performs graceful WebSocket teardown on SIGTERM / dev-reload so subscription clients receive a clean 1001 (Going Away) frame instead of hanging until ping-timeout.
 

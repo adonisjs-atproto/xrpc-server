@@ -1,6 +1,8 @@
 # XRPC Plan 02 — Serializer Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+>
+> **Model:** Claude Sonnet (current generation) — the design and audit work is settled in the spec and plans; execution is mechanical enough that Opus is overkill.
 
 **Goal:** Ship `XrpcSerializer` — the internal subclass of `BaseSerializer` (from `@adonisjs/core/transformers`, the re-export path of `@adonisjs/http-transformers`) that the dispatch layer (Plan 03) calls to unpack transformer contracts (`Item` / `Collection`) before atcute frames the result onto the wire. Stays internal — no `index.ts` re-export, no subpath, no `defineConfig({ serializer })` consumer slot in v1. If a real consumer use case for customizing the serializer surfaces post-v1, exposing the class + adding the config knob is a non-breaking additive change.
 

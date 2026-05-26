@@ -7,11 +7,14 @@ import type { ContainerProviderContract } from '@adonisjs/application/types'
 import { XrpcRouter } from '../src/router/index.js'
 import { XrpcServer, createXrpcExecutor } from '../src/xrpc_server.js'
 import { XrpcSerializer } from '../src/serializer.js'
-import { XrpcService } from '../src/xrpc_service.js'
+import { XrpcService, REPORTED } from '../src/xrpc_service.js'
+import { XrpcContext } from '../src/context.js'
+import { XrpcError, InternalServerError } from '../src/errors.js'
 
 declare module '@adonisjs/core/types' {
   export interface ContainerBindings {
     xrpcRouter: XrpcRouter
+    xrpc: XrpcService
   }
 }
 
@@ -48,6 +51,12 @@ export default class XrpcProvider implements ContainerProviderContract {
   register() {
     this.app.container.singleton(XrpcRouter, () => new XrpcRouter(this.app))
     this.app.container.alias('xrpcRouter', XrpcRouter)
+
+    // Bound here so `services/xrpc.ts`'s `app.booted(...)` hook can resolve
+    // it. The 'xrpc' alias is what `services/xrpc.ts` resolves against —
+    // keep it stable.
+    this.app.container.singleton(XrpcService, () => new XrpcService(this.app))
+    this.app.container.alias('xrpc', XrpcService)
   }
 
   async boot() {
@@ -101,12 +110,24 @@ export default class XrpcProvider implements ContainerProviderContract {
     // reference (the executor reads from it at dispatch time); commit just
     // sealed further registration.
     const xrpcRouter = await this.app.container.make('xrpcRouter')
-    // Task 3 interim: construct XrpcService directly. Task 4 replaces this
-    // with a container-singleton binding + resolution via make('xrpc'), and
-    // adds atcute's handleException / onSocketError hook wiring.
-    const xrpc = new XrpcService(this.app)
+    const xrpc = await this.app.container.make('xrpc')
+
     const ws = createNodeWebSocket()
-    const atcuteRouter = new XRPCRouter({ websocket: ws.adapter })
+
+    // Asymmetric hook wiring — see the Amendments section in Plan 04:
+    // - handleException: fires for atcute-internal HTTP errors (parse
+    //   failures, lexicon assertion, route mismatch) that never reach our
+    //   executor's try/catch. Dedup via REPORTED symbol for handler-side
+    //   errors that already went through runConsumerHandler.
+    // - onSocketError: subscription telemetry only — atcute has already
+    //   closed the socket with 1011 before this fires. No return path; no
+    //   handle() call. Subscription-path handler errors are covered by
+    //   wrapSubscriptionIterator's catch block (Task 3).
+    const atcuteRouter = new XRPCRouter({
+      websocket: ws.adapter,
+      handleException: makeAtcuteHttpHook(xrpc),
+      onSocketError: makeSocketErrorObserver(xrpc),
+    })
     const executor = createXrpcExecutor({
       operations: xrpcRouter.operations,
       serializer: new XrpcSerializer(),
@@ -121,5 +142,95 @@ export default class XrpcProvider implements ContainerProviderContract {
     this.app.container.bindValue(XrpcServer, xrpcServer)
 
     await xrpcServer.start()
+  }
+}
+
+/**
+ * Build the atcute `handleException` hook (HTTP path). Runs the consumer's
+ * registered ExceptionHandler against the error and throws the sanitized
+ * XrpcError for atcute's wire encoder to produce the response body.
+ *
+ * **Dedup** (REPORTED symbol): handler-side errors enter the executor's
+ * catch FIRST (Task 3's `runConsumerHandler`). The executor calls
+ * `handler.report` + `handler.handle`, stamps the returned XrpcError with
+ * `REPORTED`, and throws — atcute then sees the (already-sanitized)
+ * XrpcError and calls THIS hook. We check the symbol and short-circuit so
+ * reporting/handling isn't duplicated. Errors raised inside atcute before
+ * reaching our executor (request parsing, lexicon assertion, route
+ * matching) have no `REPORTED` stamp and get the full handler invocation.
+ *
+ * **XrpcContext.get()** returns the active context if the executor had
+ * entered the ALS before throwing (HTTP handler-side errors). Atcute-
+ * internal errors raised before the executor runs have no XrpcContext —
+ * `get()` returns undefined and we pass null to the consumer's handler.
+ */
+function makeAtcuteHttpHook(xrpc: XrpcService) {
+  return async (err: unknown): Promise<never> => {
+    if ((err as any)?.[REPORTED]) {
+      throw err
+    }
+
+    const handler = await xrpc.getRegisteredErrorHandler()
+    if (!handler) {
+      // No handler registered (tests, consumers who haven't wired
+      // start/kernel.ts yet). Mirror runConsumerHandler's fallback so
+      // atcute still gets a well-formed XrpcError.
+      const fallback =
+        err instanceof XrpcError
+          ? err
+          : new InternalServerError(err instanceof Error ? err.message : String(err), {
+              cause: err,
+            })
+      ;(fallback as any)[REPORTED] = true
+      throw fallback
+    }
+
+    const xrpcCtx = XrpcContext.get() ?? null
+
+    if (handler.shouldReport(err)) {
+      try {
+        await handler.report(err, xrpcCtx)
+      } catch {
+        // Swallow reporter failures so the original error still gets
+        // sanitized and re-thrown for atcute to encode.
+      }
+    }
+
+    const sanitized = await handler.handle(err, xrpcCtx)
+    ;(sanitized as any)[REPORTED] = true
+    throw sanitized
+  }
+}
+
+/**
+ * Build the atcute `onSocketError` observer (subscription path). Atcute
+ * invokes this AFTER it has closed the socket with 1011 for non-
+ * `XRPCSubscriptionError` throws — telemetry-only, no return path.
+ * Calls the consumer handler's `report` (when `shouldReport` is truthy)
+ * so observability survives atcute-internal subscription failures.
+ *
+ * Does NOT call `handler.handle()` — the close frame has already gone,
+ * there's nothing to sanitize for the wire. Does NOT throw — atcute's
+ * cleanup path is finalized at this point.
+ */
+function makeSocketErrorObserver(xrpc: XrpcService) {
+  return async ({ error, request }: { error: unknown; request: Request }): Promise<void> => {
+    void request
+    if ((error as any)?.[REPORTED]) {
+      return
+    }
+
+    const handler = await xrpc.getRegisteredErrorHandler()
+    if (!handler) return
+
+    const xrpcCtx = XrpcContext.get() ?? null
+
+    if (handler.shouldReport(error)) {
+      try {
+        await handler.report(error, xrpcCtx)
+      } catch {
+        // Telemetry hook is fire-and-forget; swallow reporter failures.
+      }
+    }
   }
 }

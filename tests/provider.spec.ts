@@ -2,6 +2,7 @@ import { test } from '@japa/runner'
 import { setupApp } from './helpers.js'
 import { XrpcServer } from '../src/xrpc_server.js'
 import { XrpcRouter } from '../src/router/index.js'
+import { XrpcService } from '../src/xrpc_service.js'
 
 test.group('XrpcProvider', () => {
   test('boot() installs the `router.xrpc` getter', async ({ assert }) => {
@@ -81,5 +82,19 @@ test.group('XrpcProvider', () => {
       app.container.hasBinding(XrpcServer),
       'ready() should not have constructed/bound XrpcServer in console env'
     )
+  })
+
+  test('register() binds XrpcService as a container singleton', async ({ assert }) => {
+    const { app } = await setupApp({
+      rcFileContents: {
+        providers: [() => import('../providers/provider.js')],
+      },
+    })
+
+    const xrpc = await app.container.make('xrpc')
+    assert.instanceOf(xrpc, XrpcService)
+
+    const xrpc2 = await app.container.make('xrpc')
+    assert.strictEqual(xrpc, xrpc2, 'singleton — same instance on repeated resolution')
   })
 })

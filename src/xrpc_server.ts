@@ -34,6 +34,7 @@ import { type RequestContext } from './request_context.js'
 // module's *runtime* dependency surface is just the constructor names; the
 // actual `XRPCRouter` / `createNodeWebSocket` instances are constructed by
 // the provider (Plan 04) and passed into `XrpcServer`'s constructor.
+import { XRPCSubscriptionError } from '@atcute/xrpc-server'
 import type { XRPCRouter } from '@atcute/xrpc-server'
 import type { createNodeWebSocket } from '@atcute/xrpc-server-node'
 
@@ -222,12 +223,56 @@ export function createXrpcExecutor(deps: {
   }
 }
 
-/** Stub. Real implementation lands in Task 4. */
-// eslint-disable-next-line require-yield
+/**
+ * Wraps a user-provided async-generator subscription handler with a
+ * transforming generator that:
+ *
+ * 1. Re-enters the `XrpcContext.als` scope on every inner `.next()` call so
+ *    downstream code calling `XrpcContext.getOrFail()` from inside yields
+ *    sees the current context. Async generators capture context at `.next()`
+ *    time (NOT at construction); a one-shot `als.run` around iterator
+ *    construction doesn't propagate.
+ * 2. Pipes each yielded value through the XRPC serializer (so transformer
+ *    contracts the user embedded — `Item` / `Collection` — get unpacked
+ *    before atcute's framing layer encodes the message as a CBOR frame).
+ *
+ * On error, `XrpcError` instances are translated to `XRPCSubscriptionError`
+ * so atcute's `handleSubscriptionException` hook emits the error frame and
+ * closes the stream cleanly.
+ */
 async function* wrapSubscriptionIterator(
-  _iterable: AsyncIterable<unknown>,
-  _xrpcCtx: XrpcContext<XrpcLexicon>,
-  _serializer: XrpcSerializer
+  iterable: AsyncIterable<unknown>,
+  xrpcCtx: XrpcContext<XrpcLexicon>,
+  serializer: XrpcSerializer
 ): AsyncGenerator<unknown> {
-  throw new RuntimeException('wrapSubscriptionIterator() not yet implemented (Plan 03 Task 4)')
+  // Only needs xrpcCtx — containerResolver (for serialization) and the full
+  // context (for the error reporter) both live on XrpcContext.
+  const inner = iterable[Symbol.asyncIterator]()
+  try {
+    while (true) {
+      // Each .next() runs inside the XrpcContext ALS scope. The user's
+      // generator body resumes inside this scope and any downstream
+      // `XrpcContext.getOrFail()` call sees `xrpcCtx`. Async generators
+      // capture context at .next() time, not construction.
+      const result = await XrpcContext.als.run(xrpcCtx, () => inner.next())
+      if (result.done) return
+      // Serialization doesn't need to read XrpcContext via the ALS, so it
+      // stays outside the scope — keeps the scope window tight to just
+      // handler execution.
+      yield await serializer.serializeWithoutWrapping(result.value, xrpcCtx.containerResolver)
+    }
+  } catch (err: any) {
+    const xrpcError =
+      err instanceof XrpcError
+        ? err
+        : new InternalServerError(err?.message ?? String(err), { cause: err })
+    // ERROR-REPORTING SEAM (Plan 04): call
+    //   `await xrpc.getRegisteredSubscriptionErrorHandler()?.report(err, xrpcCtx)`
+    // here. Falls through to `getRegisteredErrorHandler()` when the
+    // subscription-specific handler isn't registered.
+    throw new XRPCSubscriptionError({
+      error: xrpcError.errorName,
+      message: xrpcError.message,
+    })
+  }
 }

@@ -314,3 +314,163 @@ test.group('createXrpcExecutor — HTTP procedure path', (group) => {
     }
   })
 })
+
+test.group('createXrpcExecutor — subscription path', (group) => {
+  group.each.setup(async () => {
+    await setupApp()
+  })
+
+  const SUB_LEXICON = {
+    id: 'com.example.stream',
+    nsid: 'com.example.stream',
+    type: 'xrpc_subscription',
+    defs: {
+      main: {
+        type: 'subscription',
+        message: { schema: { type: 'union', refs: ['#tick'] } },
+      },
+      tick: { type: 'object', properties: { n: { type: 'integer' } } },
+    },
+  } as const
+
+  test('wraps an async-generator handler and yields serialized messages', async ({ assert }) => {
+    const executor = createXrpcExecutor({
+      operations: new Map([
+        [
+          SUB_LEXICON.id,
+          {
+            lexicon: SUB_LEXICON as any,
+            handler: {
+              kind: 'function' as const,
+              fn: async function* (_ctx: any) {
+                yield { $type: 'com.example.stream#tick', n: 1 }
+                yield { $type: 'com.example.stream#tick', n: 2 }
+                yield { $type: 'com.example.stream#tick', n: 3 }
+              },
+            },
+          },
+        ],
+      ]),
+      serializer: new XrpcSerializer(),
+    })
+
+    const requestCtx = makeRequestCtx()
+    const atcuteCtx = {
+      request: new Request('http://localhost/xrpc/com.example.stream'),
+      params: {},
+      signal: new AbortController().signal,
+    }
+
+    const iterable = (await executor(atcuteCtx, requestCtx)) as AsyncIterable<any>
+    const collected: any[] = []
+    for await (const msg of iterable) {
+      collected.push(msg)
+    }
+
+    assert.lengthOf(collected, 3)
+    assert.equal(collected[0].n, 1)
+    assert.equal(collected[2].n, 3)
+  })
+
+  test('XrpcContext.als is in scope during each yielded value (per-.next() ALS re-entry)', async ({
+    assert,
+  }) => {
+    // The whole reason wrapSubscriptionIterator takes xrpcCtx as a parameter
+    // and wraps each inner .next() in XrpcContext.als.run: async generators
+    // capture their ALS context at .next() time, not at construction. If we
+    // ever regress to a one-shot als.run around iterator construction, this
+    // test fails — the handler body's getOrFail() calls return undefined.
+    const { XrpcContext } = await import('../src/context.js')
+    const observed: ({ has: true; nsid: string } | { has: false })[] = []
+    const executor = createXrpcExecutor({
+      operations: new Map([
+        [
+          SUB_LEXICON.id,
+          {
+            lexicon: SUB_LEXICON as any,
+            handler: {
+              kind: 'function' as const,
+              fn: async function* (_ctx: any) {
+                for (let n = 1; n <= 3; n++) {
+                  const fromAls = XrpcContext.als.getStore()
+                  observed.push(
+                    fromAls ? { has: true, nsid: (fromAls.lexicon as any).id } : { has: false }
+                  )
+                  yield { $type: 'com.example.stream#tick', n }
+                }
+              },
+            },
+          },
+        ],
+      ]),
+      serializer: new XrpcSerializer(),
+    })
+
+    const requestCtx = makeRequestCtx()
+    const atcuteCtx = {
+      request: new Request('http://localhost/xrpc/com.example.stream'),
+      params: {},
+      signal: new AbortController().signal,
+    }
+
+    const iterable = (await executor(atcuteCtx, requestCtx)) as AsyncIterable<any>
+    for await (const _ of iterable) {
+      /* drain */
+    }
+
+    assert.lengthOf(observed, 3)
+    for (const entry of observed) {
+      assert.isTrue(entry.has, 'XrpcContext.als.getStore() should be defined on each yield')
+      assert.equal((entry as any).nsid, 'com.example.stream')
+    }
+  })
+
+  test('translates XrpcError thrown from a subscription handler to XRPCSubscriptionError', async ({
+    assert,
+  }) => {
+    const { InvalidRequestError } = await import('../src/errors.js')
+    const { XRPCSubscriptionError } = await import('@atcute/xrpc-server')
+
+    const executor = createXrpcExecutor({
+      operations: new Map([
+        [
+          SUB_LEXICON.id,
+          {
+            lexicon: SUB_LEXICON as any,
+            handler: {
+              kind: 'function' as const,
+              fn: async function* (_ctx: any) {
+                yield { $type: 'com.example.stream#tick', n: 1 }
+                throw new InvalidRequestError('cursor is from the future')
+              },
+            },
+          },
+        ],
+      ]),
+      serializer: new XrpcSerializer(),
+    })
+
+    const requestCtx = makeRequestCtx()
+
+    const atcuteCtx = {
+      request: new Request('http://localhost/xrpc/com.example.stream'),
+      params: {},
+      signal: new AbortController().signal,
+    }
+
+    const iterable = (await executor(atcuteCtx, requestCtx)) as AsyncIterable<any>
+    const collected: any[] = []
+    try {
+      for await (const msg of iterable) {
+        collected.push(msg)
+      }
+      assert.fail('iterable should have thrown')
+    } catch (err: any) {
+      assert.instanceOf(err, XRPCSubscriptionError)
+      assert.equal(err.error, 'InvalidRequest') // mapped from XrpcError.errorName
+      assert.match(err.message, /cursor is from the future/)
+    }
+
+    assert.lengthOf(collected, 1, 'first message yielded before the throw')
+  })
+})

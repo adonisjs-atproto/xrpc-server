@@ -88,3 +88,19 @@ export interface XrpcProviderConfig {
 }
 
 export type XrpcConfig = XrpcProviderConfig
+
+// --- Adonis Router augmentation ----------------------------------------
+//
+// Declared here (rather than in providers/provider.ts) so the augmentation
+// is visible everywhere `src/types.ts` is — including test files and
+// consumer code that import package symbols transitively — without forcing
+// each `router.xrpc` consumer to add a side-effect import of the provider
+// just to satisfy the typechecker. The runtime install happens in the
+// provider's `boot()` (see Plan 03/04); this declaration is type-only.
+import type { XrpcRouter } from './router.js'
+
+declare module '@adonisjs/core/http' {
+  interface Router {
+    xrpc: XrpcRouter
+  }
+}

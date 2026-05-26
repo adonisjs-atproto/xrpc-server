@@ -24,10 +24,10 @@ test.group('XrpcProvider', () => {
         },
       },
       {
-        beforeReady: async (app) => {
+        beforeReady: async (testApp) => {
           // Register a route so commit() (in provider.start(), which fires
           // between preloads and ready()) seals a non-empty registry.
-          const router = await app.container.make('router')
+          const router = await testApp.container.make('router')
           router.xrpc.procedure(
             { nsid: 'com.example.ping', type: 'xrpc_procedure' } as any,
             () => ({ pong: true })
@@ -57,8 +57,8 @@ test.group('XrpcProvider', () => {
         },
       },
       {
-        beforeReady: async (app) => {
-          const router = await app.container.make('router')
+        beforeReady: async (testApp) => {
+          const router = await testApp.container.make('router')
           router.xrpc.procedure(
             { nsid: 'com.example.ping', type: 'xrpc_procedure' } as any,
             () => ({ pong: true })

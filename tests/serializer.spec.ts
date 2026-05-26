@@ -1,24 +1,14 @@
 import { test } from '@japa/runner'
-import type { ApplicationService } from '@adonisjs/core/types'
 import { BaseTransformer } from '@adonisjs/core/transformers'
-import { setupApp } from './helpers.js'
 import { XrpcSerializer } from '../src/serializer.js'
 
-class UserTransformer extends BaseTransformer<{ id: number; name: string }> {
+class FixtureTransformer extends BaseTransformer<{ id: number; name: string }> {
   toObject() {
     return { id: this.resource.id, name: this.resource.name }
   }
 }
 
-test.group('XrpcSerializer', (group) => {
-  let app: ApplicationService
-
-  group.each.setup(async () => {
-    const result = await setupApp()
-    app = result.app
-    return result.terminate
-  })
-
+test.group('XrpcSerializer', () => {
   test('wrap is undefined (XRPC has no envelope key)', ({ assert }) => {
     const serializer = new XrpcSerializer()
     assert.equal(serializer.wrap, undefined)
@@ -32,9 +22,8 @@ test.group('XrpcSerializer', (group) => {
 
   test('serialize unpacks an Item contract to the transformed object', async ({ assert }) => {
     const serializer = new XrpcSerializer()
-    const resolver = app.container.createResolver()
-    const item = UserTransformer.transform({ id: 1, name: 'Alice' })!
-    const result = await serializer.serialize(item, resolver)
+    const item = FixtureTransformer.transform({ id: 1, name: 'Alice' })!
+    const result = await serializer.serialize(item)
     assert.deepEqual(result, { id: 1, name: 'Alice' })
   })
 
@@ -42,12 +31,11 @@ test.group('XrpcSerializer', (group) => {
     assert,
   }) => {
     const serializer = new XrpcSerializer()
-    const resolver = app.container.createResolver()
-    const collection = UserTransformer.transform([
+    const collection = FixtureTransformer.transform([
       { id: 1, name: 'Alice' },
       { id: 2, name: 'Bob' },
     ])!
-    const result = await serializer.serialize(collection, resolver)
+    const result = await serializer.serialize(collection)
     assert.deepEqual(result, [
       { id: 1, name: 'Alice' },
       { id: 2, name: 'Bob' },
@@ -58,10 +46,9 @@ test.group('XrpcSerializer', (group) => {
     assert,
   }) => {
     const serializer = new XrpcSerializer()
-    const resolver = app.container.createResolver()
-    const item = UserTransformer.transform({ id: 1, name: 'Alice' })!
-    const wrapped = await serializer.serialize(item, resolver)
-    const unwrapped = await serializer.serializeWithoutWrapping(item, resolver)
+    const item = FixtureTransformer.transform({ id: 1, name: 'Alice' })!
+    const wrapped = await serializer.serialize(item)
+    const unwrapped = await serializer.serializeWithoutWrapping(item)
     assert.deepEqual(wrapped, unwrapped)
   })
 
@@ -69,9 +56,8 @@ test.group('XrpcSerializer', (group) => {
     assert,
   }) => {
     const serializer = new XrpcSerializer()
-    const resolver = app.container.createResolver()
     const plain = { reportId: 'abc', createdAt: '2026-05-24T00:00:00Z' }
-    const result = await serializer.serialize(plain, resolver)
+    const result = await serializer.serialize(plain)
     assert.deepEqual(result, plain)
   })
 
@@ -88,15 +74,14 @@ test.group('XrpcSerializer', (group) => {
     // Paginator contract, whose default `{ data, meta }` shape doesn't match
     // any atproto lexicon's output schema.
     const serializer = new XrpcSerializer()
-    const resolver = app.container.createResolver()
     const response = {
       cursor: 'opaque-cursor-value',
-      followers: UserTransformer.transform([
+      followers: FixtureTransformer.transform([
         { id: 1, name: 'Alice' },
         { id: 2, name: 'Bob' },
       ])!,
     }
-    const result = await serializer.serialize(response, resolver)
+    const result = await serializer.serialize(response)
     assert.deepEqual(result, {
       cursor: 'opaque-cursor-value',
       followers: [

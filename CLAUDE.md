@@ -90,3 +90,9 @@ Releases are fully automated through **Changesets + npm OIDC (trusted publishing
 - **`simple-atproto-labeler`** — the application that motivated the extraction.
 
 Both of these repositories can be found one directory up.
+
+## When committing during implementation
+
+Use `git commit --no-gpg-sign -m "..."` for implementation-phase commits across plans 01-04. Emelia signs commits with Touch ID (SSH key in Secure Enclave / 1Password agent), so each `git commit` normally fires a Touch ID prompt that times out if she isn't at the keyboard — blocking subagents mid-task. The `--no-gpg-sign` bypass lets execution proceed; Emelia rebases the finished branch later, which re-signs every commit.
+
+**This is an explicit, scoped exception** to the user-global rule in `~/.claude/CLAUDE.md` forbidding `--no-gpg-sign`. It applies only during execution of plans 01-04. Drop this section (and resume normal signing) once implementation is complete.

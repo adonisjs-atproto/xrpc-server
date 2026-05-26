@@ -5,11 +5,12 @@ import type { ApplicationService } from '@adonisjs/core/types'
 import type { ContainerProviderContract } from '@adonisjs/application/types'
 
 import { XrpcRouter } from '../src/router/index.js'
-import { XrpcServer, createXrpcExecutor } from '../src/xrpc_server.js'
+import { XrpcServer } from '../src/xrpc_server.js'
 import { XrpcSerializer } from '../src/serializer.js'
 import { XrpcService, REPORTED } from '../src/xrpc_service.js'
 import { XrpcContext } from '../src/context.js'
 import { XrpcError, InternalServerError } from '../src/errors.js'
+import { createXrpcExecutor } from '../src/executor.ts'
 
 declare module '@adonisjs/core/types' {
   export interface ContainerBindings {

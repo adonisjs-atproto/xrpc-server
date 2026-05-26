@@ -2,7 +2,7 @@ import { test } from '@japa/runner'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { HttpContextFactory } from '@adonisjs/core/factories/http'
 
-import { XrpcServer, createXrpcExecutor } from '../src/xrpc_server.js'
+import { XrpcServer } from '../src/xrpc_server.js'
 import {
   fromHttpContext,
   requestContextStore,
@@ -15,6 +15,7 @@ import { XrpcRouter, type RouteInfo } from '../src/router/index.js'
 import { XrpcService, REPORTED } from '../src/xrpc_service.js'
 import { ExceptionHandler } from '../src/exception_handler.js'
 import { setupApp } from './helpers.js'
+import { createXrpcExecutor } from '../src/executor.ts'
 
 // --- shared lexicons ------------------------------------------------------
 

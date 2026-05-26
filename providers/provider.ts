@@ -43,7 +43,9 @@ declare module '@adonisjs/core/types' {
  * + executor + XrpcServer, container-binds, then calls `XrpcServer.start()`
  * to install routes onto atcute and wire the WS upgrade handler. Plan 04
  * expands this with `XrpcService` facade, error-reporter registration,
- * and atcute's handleException / handleSubscriptionException wiring.
+ * and atcute hook wiring (handleException for HTTP; onSocketError for
+ * subscription telemetry — atcute has no subscription-path handleException
+ * equivalent; subscription error handling lives in wrapSubscriptionIterator).
  */
 export default class XrpcProvider implements ContainerProviderContract {
   constructor(protected app: ApplicationService) {}

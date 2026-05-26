@@ -14,11 +14,11 @@ The provider's `boot()` binds the `XrpcService` singleton alongside the existing
 
 **Atcute exposes no `handleSubscriptionException` hook.** Plan 04's earlier draft assumed `XRPCRouterOptions` had a symmetric pair of `handleException` (HTTP) + `handleSubscriptionException` (subscription). Verification against `~/Development/git/github.com/mary-ext/atcute/packages/servers/xrpc-server/lib/main/router.ts` (trunk) shows the actual surface is asymmetric:
 
-| Hook | Path | Effect |
-|---|---|---|
+| Hook              | Path | Effect                                                                           |
+| ----------------- | ---- | -------------------------------------------------------------------------------- |
 | `handleException` | HTTP | Translates a thrown error → `Response`. Configurable, can customize wire format. |
-| `onError` | HTTP | Fire-and-forget telemetry. Cannot change response. |
-| `onSocketError` | WS | Fire-and-forget telemetry. Cannot influence close frame. |
+| `onError`         | HTTP | Fire-and-forget telemetry. Cannot change response.                               |
+| `onSocketError`   | WS   | Fire-and-forget telemetry. Cannot influence close frame.                         |
 
 For subscriptions, atcute's error handling is internal and fixed: throwing `XRPCSubscriptionError` → emit error frame + close with `err.closeCode`; throwing anything else → close `1011` + invoke `onSocketError`. The only way to customize the subscription wire-error is to throw a properly-shaped `XRPCSubscriptionError`, which `wrapSubscriptionIterator` (Plan 03 Task 4) already does.
 
@@ -37,8 +37,8 @@ When Task 4's code lands, replace the `makeAtcuteHook` block with the two split 
 
 ```ts
 // Application.terminate() body
-await this.#hooks.runner('terminating').runReverse(this)  // 1. terminating hooks, LIFO
-await this.#providersManager.shutdown(true)               // 2. provider shutdown hooks
+await this.#hooks.runner('terminating').runReverse(this) // 1. terminating hooks, LIFO
+await this.#providersManager.shutdown(true) // 2. provider shutdown hooks
 ```
 
 `HttpServerProcess.#monitorAppAndServer` registers `app.terminating(async () => { await this.#close(nodeHttpServer) })` during HTTP startup. `nodeHttpServer.close()`'s callback fires only when all open connections drain — but a connected WebSocket keeps the TCP socket alive indefinitely. So if our graceful-WS-close lived in provider `shutdown()`, the HTTP-server-close `terminating` hook would hang forever on the WS connections and our `shutdown()` would never run.
@@ -307,7 +307,7 @@ The file pattern is taken verbatim from `@adonisjs/core/services/server.ts` — 
 
 **Steps:**
 
-- [ ] **Step 1: Implement `services/xrpc.ts`**
+- [x] **Step 1: Implement `services/xrpc.ts`**
 
 ````ts
 import app from '@adonisjs/core/services/app'
@@ -357,13 +357,13 @@ await app.booted(async () => {
 export { xrpc as default }
 ```
 
-- [ ] **Step 2: Verify the file typechecks**
+- [x] **Step 2: Verify the file typechecks**
 
 Run: `pnpm typecheck`
 
 Expected: PASS. No tests for this file — it's a six-line accessor whose behavior is exercised end-to-end by the functional tests in Task 6.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add services/xrpc.ts
@@ -389,7 +389,7 @@ After successfully running `handle()`, the executor stamps the returned `XrpcErr
 
 **Steps:**
 
-- [ ] **Step 1: Widen the `deps` type and remove the seam comment**
+- [x] **Step 1: Widen the `deps` type and remove the seam comment**
 
 In `src/xrpc_server.ts`, locate `export function createXrpcExecutor(deps: { operations, serializer })` and change it to:
 
@@ -408,7 +408,7 @@ export function createXrpcExecutor(deps: {
 
 The `// ERROR-REPORTING SEAM (Plan 04)` comment on the deps type goes away — the field is now real.
 
-- [ ] **Step 2: Replace the procedure/query catch-block seam**
+- [x] **Step 2: Replace the procedure/query catch-block seam**
 
 Inside the executor's outer try/catch (the one wrapping the handler invocation for procedure/query), locate the `// ERROR-REPORTING SEAM (Plan 04)` comment and replace it (plus the surrounding Plan 03 fallback-wrap logic) with:
 
@@ -481,7 +481,7 @@ Notes:
 - `handler.shouldReport(err)` is a method-call (no `?.`) because `ExceptionHandler` defines `shouldReport()` concretely with a default return of `true`. Consumers who want to suppress override it.
 - The `REPORTED` stamp goes on even in the fallback path — that way atcute's hook (which can't tell whether we already ran a handler or just wrapped inline) still skips correctly.
 
-- [ ] **Step 3: Replace the subscription catch-block seam in `wrapSubscriptionIterator`**
+- [x] **Step 3: Replace the subscription catch-block seam in `wrapSubscriptionIterator`**
 
 In `src/xrpc_server.ts`'s `wrapSubscriptionIterator`, locate the `// ERROR-REPORTING SEAM (Plan 04)` comment in the catch block. Replace it with:
 
@@ -524,7 +524,7 @@ Order rationale: `iterable` and `xrpcCtx` are the per-call inputs; `xrpc` and `s
 
 Note: the `XRPCSubscriptionError` translation stays here (not inside `runConsumerHandler`) because it's subscription-specific — atcute expects this wrapper shape for subscription wire frames, but procedure/query throws the raw `XrpcError` directly.
 
-- [ ] **Step 4: Update tests in `tests/xrpc_server.spec.ts`**
+- [x] **Step 4: Update tests in `tests/xrpc_server.spec.ts`**
 
 Add new tests to the existing executor test group:
 
@@ -569,7 +569,7 @@ test('reporter throw does not mask the sanitized error', async ({ assert }) => {
 
 The setupApp shape and the `createXrpcExecutor` invocation pattern are already established in Plan 03's `tests/xrpc_server.spec.ts` — copy and extend, don't reinvent.
 
-- [ ] **Step 5: Update `createXrpcExecutor` call sites in existing Plan 03 tests**
+- [x] **Step 5: Update `createXrpcExecutor` call sites in existing Plan 03 tests**
 
 Plan 03's tests construct `createXrpcExecutor({ operations, serializer })` directly. They now need to pass `xrpc`. Update those sites:
 
@@ -585,13 +585,13 @@ No handler registration is needed for tests that don't care about error reportin
 
 The provider's `ready()` (Task 4) passes `xrpc` from the resolved container binding.
 
-- [ ] **Step 6: Run tests to verify pass**
+- [x] **Step 6: Run tests to verify pass**
 
 Run: `pnpm quick:test --files tests/xrpc_server.spec.ts`
 
 Expected: all existing Plan 03 executor tests still pass + the 4 new tests pass.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add src/xrpc_server.ts tests/xrpc_server.spec.ts

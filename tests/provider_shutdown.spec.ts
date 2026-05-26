@@ -39,7 +39,11 @@ test.group('XrpcServer.shutdown() — graceful WS teardown', () => {
     const xrpcServer = await app.container.make(XrpcServer)
 
     const stream = await injectXrpcSubscription(nodeServer, STREAM as any)
-    assert.equal(stream.socket.readyState, stream.socket.OPEN, 'socket should be open before shutdown')
+    assert.equal(
+      stream.socket.readyState,
+      stream.socket.OPEN,
+      'socket should be open before shutdown'
+    )
 
     // Capture close event from the client side.
     let closeCode: number | undefined

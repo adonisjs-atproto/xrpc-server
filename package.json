@@ -92,9 +92,9 @@
     "yalc": "1.0.0-pre.53"
   },
   "peerDependencies": {
+    "@adonisjs/application": "^9.0.0",
     "@adonisjs/assembler": "^8.0.0",
     "@adonisjs/core": "^7.0.1",
-    "@adonisjs/application": "^9.0.0",
     "@poppinss/utils": "^7.0.1"
   },
   "peerDependenciesMeta": {
@@ -164,7 +164,7 @@
     "@atcute/xrpc-server-node": "^2.0.0",
     "@poppinss/exception": "^1.2.3",
     "@poppinss/macroable": "^1.1.2",
-    "light-my-websocket": "file:.yalc/light-my-websocket",
+    "light-my-websocket": "^0.1.0",
     "ws": "^8.21.0"
   }
 }

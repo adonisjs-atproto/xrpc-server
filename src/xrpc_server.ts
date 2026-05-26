@@ -76,7 +76,9 @@ export class XrpcServer {
    * after the `#shuttingDown` guard. Populated by `#installWebSocketHandler`
    * before any upgrades can arrive.
    */
-  #atcuteUpgradeListener: ((req: http.IncomingMessage, socket: Socket, head: Buffer) => Promise<void>) | null = null
+  #atcuteUpgradeListener:
+    | ((req: http.IncomingMessage, socket: Socket, head: Buffer) => Promise<void>)
+    | null = null
 
   /**
    * The upgrade wrapper registered on the Node server. Checks `#shuttingDown`
@@ -89,7 +91,11 @@ export class XrpcServer {
    * can be referenced (for `removeListener`) in shutdown without needing a
    * stable outside reference.
    */
-  #upgradeListener = async (req: http.IncomingMessage, socket: Socket, head: Buffer): Promise<void> => {
+  #upgradeListener = async (
+    req: http.IncomingMessage,
+    socket: Socket,
+    head: Buffer
+  ): Promise<void> => {
     if (this.#shuttingDown) {
       // Reject the upgrade by destroying the socket. The handshake hasn't
       // completed yet, so there's no WebSocket frame to send — destroying

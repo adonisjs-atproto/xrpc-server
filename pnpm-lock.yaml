@@ -27,8 +27,8 @@ importers:
         specifier: ^1.1.2
         version: 1.1.2
       light-my-websocket:
-        specifier: file:.yalc/light-my-websocket
-        version: file:.yalc/light-my-websocket(ws@8.21.0)
+        specifier: ^0.1.0
+        version: 0.1.0(ws@8.21.0)
       ws:
         specifier: ^8.21.0
         version: 8.21.0
@@ -2150,8 +2150,8 @@ packages:
   light-my-request@6.6.0:
     resolution: {integrity: sha512-CHYbu8RtboSIoVsHZ6Ye4cj4Aw/yg2oAFimlF7mNvfDV192LR7nDiKtSIfCuLT7KokPSTn/9kfVLm5OGN0A28A==}
 
-  light-my-websocket@file:.yalc/light-my-websocket:
-    resolution: {directory: .yalc/light-my-websocket, type: directory}
+  light-my-websocket@0.1.0:
+    resolution: {integrity: sha512-3n+ZyA7G44cHj3ECiEPp8YtYkpTtlDUXEv5dAh/WjE6jxpQ0hS8Vc622rmpr+Nip8K/BK8d5hPDrOuNojsnL1g==}
     engines: {node: '>=22.6'}
     peerDependencies:
       ws: ^8.21.0
@@ -5274,7 +5274,7 @@ snapshots:
       process-warning: 4.0.1
       set-cookie-parser: 2.7.2
 
-  light-my-websocket@file:.yalc/light-my-websocket(ws@8.21.0):
+  light-my-websocket@0.1.0(ws@8.21.0):
     dependencies:
       ws: 8.21.0
 

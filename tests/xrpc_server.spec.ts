@@ -369,7 +369,12 @@ test.group('createXrpcExecutor — error reporting', (group) => {
 
     const executor = makeExecutor(
       PING,
-      { kind: 'function', fn: () => { throw new Error('raw error') } },
+      {
+        kind: 'function',
+        fn: () => {
+          throw new Error('raw error')
+        },
+      },
       xrpc
     )
 
@@ -426,7 +431,9 @@ test.group('createXrpcExecutor — error reporting', (group) => {
     )
     let thrown: unknown = null
     try {
-      for await (const _msg of iterable) { /* drain */ }
+      for await (const frame of iterable) {
+        void frame // drain
+      }
     } catch (err) {
       thrown = err
     }
@@ -483,7 +490,12 @@ test.group('createXrpcExecutor — error reporting', (group) => {
 
     const executor = makeExecutor(
       PING,
-      { kind: 'function', fn: () => { throw new Error('original error') } },
+      {
+        kind: 'function',
+        fn: () => {
+          throw new Error('original error')
+        },
+      },
       xrpc
     )
 

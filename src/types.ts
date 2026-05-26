@@ -4,7 +4,10 @@
 |--------------------------------------------------------------------------
 */
 
-import type { InferInput, InferOutput } from '@atcute/lexicons'
+import type {
+  InferInput as InferSchemaInput,
+  InferOutput as InferSchemaOutput,
+} from '@atcute/lexicons'
 import type { AtprotoDid } from '@atcute/lexicons/syntax'
 import type {
   BaseSchema,
@@ -23,19 +26,43 @@ export type XrpcQueryLexicon = XRPCQueryMetadata
 export type XrpcSubscriptionLexicon = XRPCSubscriptionMetadata
 export type XrpcLexicon = XrpcProcedureLexicon | XrpcQueryLexicon | XrpcSubscriptionLexicon
 
-// Schema-level inference helpers (re-exported as-is from atcute root).
-// Work on BaseSchema fields like `lex['params']` or `lex['message']`.
-export type { InferInput, InferOutput }
+// Schema-level inference helpers from atcute root, re-exported under
+// non-colliding names so our lexicon-level InferInput / InferOutput
+// (below) can use the natural names. Advanced consumers (e.g. extracting
+// shapes from individual schemas inside a lexicon) reach for these.
+export type { InferSchemaInput, InferSchemaOutput }
 
 // Body-level inference helpers (re-exported as-is from atcute /validations).
 // Work on `lex['input']` / `lex['output']` which are XRPCBodyParam unions.
+// Useful for handler authors who want to type a body slot directly without
+// going through the lexicon-level InferInput / InferOutput wrappers.
 export type { InferXRPCBodyInput, InferXRPCBodyOutput }
 
+/**
+ * Infer the input body type for a lexicon's handler. Procedures carry an
+ * XRPCBodyParam in `.input` (which may be a lex schema, blob, or null);
+ * queries and subscriptions have no request body, so `undefined`.
+ */
+export type InferInput<L extends XrpcLexicon> =
+  L extends XRPCProcedureMetadata<any, infer I, any, any> ? InferXRPCBodyInput<I> : undefined
+
+/**
+ * Infer the output body type for a lexicon's handler. Procedures and queries
+ * each carry an XRPCBodyParam in `.output`; subscriptions stream messages
+ * instead — use `MessageOf<L>` for those.
+ */
+export type InferOutput<L extends XrpcLexicon> =
+  L extends XRPCProcedureMetadata<any, any, infer O, any>
+    ? InferXRPCBodyOutput<O>
+    : L extends XRPCQueryMetadata<any, infer O, any>
+      ? InferXRPCBodyOutput<O>
+      : never
+
 // Extract the params shape from a lexicon. atcute lexicons declare
-// `params: ObjectSchema | null`; when present, InferInput<schema> gives
-// the validated shape.
+// `params: ObjectSchema | null`; when present, InferSchemaInput<schema>
+// gives the validated shape.
 export type InferParams<L extends XrpcLexicon> = L['params'] extends infer P extends BaseSchema
-  ? InferInput<P>
+  ? InferSchemaInput<P>
   : null
 
 /**
@@ -46,7 +73,7 @@ export type InferParams<L extends XrpcLexicon> = L['params'] extends infer P ext
  */
 export type MessageOf<L extends XrpcSubscriptionLexicon> = L['message'] extends infer M extends
   BaseSchema
-  ? InferInput<M>
+  ? InferSchemaInput<M>
   : never
 
 /**

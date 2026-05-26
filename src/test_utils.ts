@@ -55,50 +55,20 @@ export async function injectXrpcSubscription<L extends XrpcSubscriptionLexicon>(
     }
   }
 
-  // Buffer queue + listener registration BEFORE `injectWS` resolves. Why:
-  // injectWS resolves on the WebSocket 'open' event, after the underlying
-  // duplex stream has been attached. Server-side `ws.send(...)` calls fire
-  // synchronously inside the upgrade handler, so by the time the consumer
-  // gets the resolved ws back, messages may already be flowing — any
-  // listener attached after that point misses them. `onInit` runs before
-  // 'open', which is early enough.
-  const queue: (Buffer | null)[] = []
-  const waiters: (() => void)[] = []
-  const push = (chunk: Buffer | null) => {
-    queue.push(chunk)
-    waiters.shift()?.()
-  }
-  const onMessage = (chunk: Buffer) => push(chunk)
-  const onEnd = () => push(null)
-
-  const ws = await injectWS(server, url.pathname + url.search, {
+  // light-my-websocket@0.1+ Chain API: `injectWS(...)` returns a thenable
+  // `WebSocketChain` synchronously. `.toIterable(decodeFrame)` queues
+  // 'message' / 'close' / 'error' listeners on the chain (replayed onto the
+  // real WebSocket BEFORE `setSocket()` attaches the parser — no race
+  // window), then exposes an async iterable that terminates on close /
+  // throws on error / detaches its listeners in a `finally` block. The
+  // `await chain` triggers `.connect()` and resolves to the connected
+  // WebSocket; `.toIterable(...)` itself also triggers `.connect()` if it
+  // hasn't been called.
+  const chain = injectWS(server, url.pathname + url.search, {
     headers: options.headers,
-    onInit(socket) {
-      socket.on('message', onMessage)
-      socket.on('close', onEnd)
-      socket.on('error', onEnd)
-    },
   })
-
-  function messages(): AsyncIterable<DecodedFrame> {
-    async function* iterate() {
-      try {
-        while (true) {
-          if (queue.length === 0) {
-            await new Promise<void>((resolve) => waiters.push(resolve))
-          }
-          const item = queue.shift()
-          if (item === null || item === undefined) return
-          yield decodeFrame(item)
-        }
-      } finally {
-        ws.off('message', onMessage)
-        ws.off('close', onEnd)
-        ws.off('error', onEnd)
-      }
-    }
-    return iterate()
-  }
+  const iterable = chain.toIterable(decodeFrame)
+  const ws = await chain
 
   async function close(code?: number, reason?: string): Promise<void> {
     if (ws.readyState === ws.CLOSED || ws.readyState === ws.CLOSING) return
@@ -107,5 +77,5 @@ export async function injectXrpcSubscription<L extends XrpcSubscriptionLexicon>(
     await closed
   }
 
-  return { messages, close, socket: ws }
+  return { messages: () => iterable, close, socket: ws }
 }

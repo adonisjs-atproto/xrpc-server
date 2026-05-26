@@ -31,7 +31,7 @@ The corresponding controller code for producing this is:
 
 ```ts
 import type { XrpcContext } from '@thisismissem/adonisjs-atproto-xrpc'
-import { app } from '#lexicons'
+import { app } from '#lexicons' // your @atcute/bluesky (or custom) lexicon bundle
 import Follower from '#models/follower'
 import FollowerTransformer from '#transformers/follower_transformer'
 
@@ -42,7 +42,7 @@ async getFollowers(ctx: XrpcContext<typeof app.bsky.graph.getFollowers>) {
     .limit(ctx.params.limit ?? 50)
 
   return {
-    cursor: followers.at(-1)?.id,
+    cursor: followers.at(-1)?.id, // example only — production cursors are opaque (timestamps or composite keys)
     followers: FollowerTransformer.transform(followers),
   }
 }

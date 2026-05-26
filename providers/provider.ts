@@ -142,6 +142,17 @@ export default class XrpcProvider implements ContainerProviderContract {
     this.app.container.bindValue(XrpcServer, xrpcServer)
 
     await xrpcServer.start()
+
+    // Register AFTER `HttpServerProcess.#monitorAppAndServer` has registered
+    // its own `terminating` hook (which calls `nodeHttpServer.close()`).
+    // `app.terminate()` runs terminating hooks via `runReverse` (LIFO), so
+    // last-registered runs first — we send 1001 frames and drain WS clients
+    // BEFORE the HTTP server tries to close. Without this ordering, the HTTP
+    // server's `.close()` blocks waiting for the WS connections to drain,
+    // and our shutdown() never gets called. See Plan 04 amendments block.
+    this.app.terminating(async () => {
+      await xrpcServer.shutdown()
+    })
   }
 }
 

@@ -22,6 +22,7 @@
 
 import type http from 'node:http'
 import { ServerResponse } from 'node:http'
+import type { Socket } from 'node:net'
 import { RuntimeException } from '@adonisjs/core/exceptions'
 import type { ApplicationService } from '@adonisjs/core/types'
 import type { Server as AdonisServer } from '@adonisjs/core/http'
@@ -41,6 +42,7 @@ import { type XrpcService, REPORTED } from './xrpc_service.js'
 import { XRPCSubscriptionError } from '@atcute/xrpc-server'
 import type { XRPCRouter } from '@atcute/xrpc-server'
 import type { createNodeWebSocket } from '@atcute/xrpc-server-node'
+import type { WebSocketServer } from 'ws'
 
 /**
  * The shared executor signature — one function per package instance,
@@ -66,6 +68,55 @@ export class XrpcServer {
   #router: XRPCRouter
   #ws: ReturnType<typeof createNodeWebSocket>
   #executor: SharedXrpcExecutor
+  #shuttingDown = false
+
+  /**
+   * Atcute's captured 'upgrade' listener, snipped from the Node server and
+   * stored here so the wrapper field `#upgradeListener` can delegate to it
+   * after the `#shuttingDown` guard. Populated by `#installWebSocketHandler`
+   * before any upgrades can arrive.
+   */
+  #atcuteUpgradeListener: ((req: http.IncomingMessage, socket: Socket, head: Buffer) => Promise<void>) | null = null
+
+  /**
+   * The upgrade wrapper registered on the Node server. Checks `#shuttingDown`
+   * first — when `shutdown()` sets the flag, in-flight upgrade negotiations
+   * are rejected (socket destroyed) so new clients don't connect during the
+   * grace window. On the normal path, delegates to `#atcuteUpgradeListener`
+   * after injecting the `RequestContext` into `requestContextStore`.
+   *
+   * Defined as a class field so `this` is lexically bound and the listener
+   * can be referenced (for `removeListener`) in shutdown without needing a
+   * stable outside reference.
+   */
+  #upgradeListener = async (req: http.IncomingMessage, socket: Socket, head: Buffer): Promise<void> => {
+    if (this.#shuttingDown) {
+      // Reject the upgrade by destroying the socket. The handshake hasn't
+      // completed yet, so there's no WebSocket frame to send — destroying
+      // the underlying TCP socket is the right signal. The client sees
+      // ECONNRESET and should retry against the new pod (post-shutdown).
+      socket.destroy()
+      return
+    }
+    if (!req.url?.startsWith('/xrpc/')) {
+      // Not ours — let other 'upgrade' listeners handle.
+      return
+    }
+    const synthRes = new ServerResponse(req)
+    const appServer = await this.#app.container.make('server')
+    const request = appServer.createRequest(req, synthRes)
+    const requestId = request.id() ?? crypto.randomUUID()
+    const logger = await this.#app.container.make('logger')
+    const requestLogger = logger.child({ request_id: requestId })
+    const containerResolver = this.#app.container.createResolver()
+    requestContextStore.enterWith({
+      requestId,
+      request,
+      logger: requestLogger,
+      containerResolver,
+    })
+    await this.#atcuteUpgradeListener!(req, socket, head)
+  }
 
   constructor(deps: {
     app: ApplicationService
@@ -121,7 +172,7 @@ export class XrpcServer {
    * `createNodeWebSocket`. With that, this method collapses to a single
    * `injectWebSocket` call + a `urlPredicate` argument.
    */
-  #installWebSocketHandler(nodeServer: http.Server, appServer: AdonisServer): void {
+  #installWebSocketHandler(nodeServer: http.Server, _appServer: AdonisServer): void {
     // Let atcute register its 'upgrade' listener, then capture it and
     // immediately remove it. We verify the listener-count delta is exactly 1
     // so we fail loudly if atcute's internals change (e.g. registers multiple
@@ -138,52 +189,14 @@ export class XrpcServer {
     }
     nodeServer.removeListener('upgrade', atcuteListener)
 
-    // Single wrapping listener. Non-XRPC upgrades fall through to other
-    // listeners (Vite HMR, app-defined WS) without us touching the socket.
-    nodeServer.on('upgrade', async (req, socket, head) => {
-      if (!req.url?.startsWith('/xrpc/')) {
-        // Not ours — let other 'upgrade' listeners handle. Critically, this
-        // is the path Vite HMR's WebSocket upgrade takes in dev mode.
-        //
-        // Trade-off: because we snipped atcute's catch-all listener, a
-        // non-XRPC upgrade with NO consumer-registered listener falls through
-        // to Node's default behavior (destroy the socket) rather than getting
-        // an explicit 404 like atcute used to send. Acceptable: with proper
-        // consumer routing (Vite, app WS), this branch is never the last
-        // resort.
-        return
-      }
+    // Store atcute's listener so the class-field `#upgradeListener` can
+    // delegate to it after injecting RequestContext + checking #shuttingDown.
+    this.#atcuteUpgradeListener = atcuteListener
 
-      // Build a narrow RequestContext directly — no synthetic HttpContext.
-      // appServer.createRequest uses the live app config (encryption, qsParser,
-      // HTTP config) so HttpRequest.id() respects the consumer's
-      // `generateRequestId` / `createRequestId` settings — request IDs stay
-      // consistent with the HTTP-path generator within the same app. The
-      // HttpRequest itself flows into the RequestContext so subscription
-      // handlers can use `ctx.request.header(...)`, `ctx.request.input(...)`
-      // (query params), `ctx.request.completeUrl()`, etc.
-      const synthRes = new ServerResponse(req)
-      const request = appServer.createRequest(req, synthRes)
-      // Same fallback as `fromHttpContext` — keeps `RequestContext.requestId`
-      // always a string regardless of consumer's `generateRequestId` setting.
-      const requestId = request.id() ?? crypto.randomUUID()
-      const logger = await this.#app.container.make('logger')
-      const requestLogger = logger.child({ request_id: requestId })
-      const containerResolver = this.#app.container.createResolver()
-
-      // `enterWith` (not `run`) so the store survives the synchronous chain
-      // when we delegate to atcute's captured listener (which awaits async
-      // work in router.fetch — those continuations inherit our store via
-      // async-hooks init snapshotting).
-      requestContextStore.enterWith({
-        requestId,
-        request,
-        logger: requestLogger,
-        containerResolver,
-      })
-
-      await atcuteListener(req, socket, head)
-    })
+    // Register the single wrapping listener. Non-XRPC upgrades pass through;
+    // shutting-down state rejects new clients; #upgradeListener handles the
+    // rest including RequestContext injection and atcute delegation.
+    nodeServer.on('upgrade', this.#upgradeListener)
   }
 
   #installRoutes(xrpc: XrpcRouter): void {
@@ -232,6 +245,62 @@ export class XrpcServer {
   }
 
   /**
+   * Gracefully shut down all active WebSocket (subscription) connections.
+   *
+   * 1. Flip `#shuttingDown` — the upgrade wrapper starts rejecting new
+   *    connections immediately.
+   * 2. Send 1001 "Going Away" to every connected client. This lets well-
+   *    behaved clients exit their read loops cleanly (they receive the close
+   *    frame and drain their async generators) rather than waiting for a
+   *    ping timeout (typically 30s).
+   * 3. Wait up to `graceMs` for all clients to ack the close. Each ack
+   *    removes the client from `wss.clients`; we poll until the set is
+   *    empty or the grace window expires.
+   * 4. Force-terminate any survivors (non-acking or misbehaving clients)
+   *    via `.terminate()`, which kills the underlying TCP socket without
+   *    sending a frame.
+   *
+   * Called from the `app.terminating(...)` hook registered in `ready()` —
+   * must run BEFORE Adonis's own HTTP-server `.close()` hook (LIFO order
+   * ensures this when registered last). See the Plan 04 amendments block
+   * for the full ordering analysis.
+   *
+   * `graceMs` defaults to 3000ms. To-do: expose via `defineConfig` when a
+   * consumer with unusually long-running subscription handlers turns up.
+   */
+  async shutdown(graceMs = 3000): Promise<void> {
+    this.#shuttingDown = true
+
+    // No connected clients — nothing to drain.
+    if (this.#ws.wss.clients.size === 0) return
+
+    // Send 1001 "Going Away" to every connected client. Snapshot to
+    // Array.from before iterating — `.close()` may synchronously remove the
+    // client from `wss.clients` and skew direct Set iteration.
+    for (const client of Array.from(this.#ws.wss.clients)) {
+      try {
+        client.close(1001, 'server shutting down')
+      } catch {
+        // Already closed / closing — ignore.
+      }
+    }
+
+    // Wait briefly for clients to ack the close.
+    await waitForAllClientsClosed(this.#ws.wss, graceMs)
+
+    // Force-terminate any survivors. `.terminate()` kills the TCP socket
+    // without sending a frame. Survivors are misbehaving clients or
+    // subscription handlers stuck past the grace window.
+    for (const client of Array.from(this.#ws.wss.clients)) {
+      try {
+        client.terminate()
+      } catch {
+        // Already terminated — ignore.
+      }
+    }
+  }
+
+  /**
    * @internal — test-only escape hatch for unit-testing `#installRoutes`
    * without needing a real container-bound Adonis router. Production code
    * goes through `start()`.
@@ -244,6 +313,25 @@ export class XrpcServer {
   get router(): XRPCRouter {
     return this.#router
   }
+}
+
+/**
+ * Poll until `wss.clients` is empty or the grace window expires.
+ * `.unref()` on the internal timer prevents the poller from holding the
+ * process open if shutdown stalls — Node's event loop exits when only
+ * `.unref()`'d timers remain.
+ */
+async function waitForAllClientsClosed(wss: WebSocketServer, graceMs: number): Promise<void> {
+  if (wss.clients.size === 0) return
+  return new Promise((resolve) => {
+    const start = Date.now()
+    const check = () => {
+      if (wss.clients.size === 0) return resolve()
+      if (Date.now() - start >= graceMs) return resolve()
+      setTimeout(check, 50).unref()
+    }
+    check()
+  })
 }
 
 export function createXrpcExecutor(deps: {

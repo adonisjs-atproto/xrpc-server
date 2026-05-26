@@ -105,6 +105,7 @@
       "./services/xrpc.ts",
       "./src/types.ts",
       "./src/router.ts",
+      "./src/serializer.ts",
       "./src/context.ts",
       "./src/exception_handler.ts",
       "./src/errors.ts",

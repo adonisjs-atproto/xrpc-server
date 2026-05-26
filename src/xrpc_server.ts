@@ -23,12 +23,12 @@
 import { RuntimeException } from '@adonisjs/core/exceptions'
 import type { ApplicationService } from '@adonisjs/core/types'
 
-import type { RouteInfo } from './router/index.js'
+import type { XrpcRouter, RouteInfo } from './router/index.js'
 import type { XrpcLexicon } from './types.js'
 import type { XrpcSerializer } from './serializer.js'
 import { XrpcContext } from './context.js'
 import { XrpcError, InternalServerError, NotFoundError } from './errors.js'
-import { type RequestContext } from './request_context.js'
+import { type RequestContext, requestContextStore } from './request_context.js'
 
 // Forward type-only references to atcute. Imports stay type-only so this
 // module's *runtime* dependency surface is just the constructor names; the
@@ -82,11 +82,76 @@ export class XrpcServer {
    * before invoking `start()`).
    */
   async start(): Promise<void> {
-    // Reference fields so TS6133 doesn't fire on the stub; Tasks 5–6 wire them in.
-    void this.#app
+    // No `useAsyncLocalStorage: true` check — the package brings its own
+    // `requestContextStore` ALS, entered by the HTTP dispatch middleware and the
+    // WS upgrade listener at the dispatch boundary. We don't depend on
+    // Adonis's HttpContext ALS for any read inside the executor.
+
+    // Routes install unconditionally — registering routes on atcute's
+    // XRPCRouter has no dependency on a Node HTTP server (the HTTP-side
+    // dispatch flows through Adonis's middleware pipeline, which doesn't
+    // care whether the server is bound to a port). Only the WebSocket
+    // upgrade handler (Task 6) genuinely needs a node server.
+    const router = await this.#app.container.make('router')
+    this.#installRoutes(router.xrpc)
+    // WebSocket upgrade handler lands in Task 6 — reference #ws so TS6133
+    // doesn't fire on the still-unused field.
     void this.#ws
-    void this.#executor
-    throw new RuntimeException('XrpcServer.start() not yet implemented (Plan 03 Task 5)')
+  }
+
+  #installRoutes(xrpc: XrpcRouter): void {
+    if (!xrpc.committed) {
+      throw new RuntimeException(
+        'XRPC builder must be committed before installing routes; call router.xrpc.commit() first'
+      )
+    }
+
+    // One closure handler for all routes. atcute has no per-request extension
+    // point; both paths bridge through `requestContextStore` (HTTP via the
+    // dispatch middleware, WS via the upgrade listener), so the registered
+    // handler just reads from it and passes the result through. The executor's
+    // signature accepts `requestCtx?: RequestContext`; if `getStore()` returns
+    // undefined here (i.e. a dispatch boundary skipped its `enterWith` /
+    // `run`), the executor throws InternalServerError with a clear diagnostic
+    // — no non-null assertion needed at this call site.
+    const handler = (atcuteCtx: any) =>
+      this.#executor(atcuteCtx, requestContextStore.getStore())
+
+    // Atcute's add* methods type the handler per route kind (Response for
+    // procedure/query; AsyncIterable for subscription) — our shared closure
+    // returns the union of both. Cast at the call sites; runtime dispatch
+    // selects the correct branch via `lexicon.type` inside the executor.
+    for (const route of xrpc.operations.values()) {
+      switch (route.lexicon.type) {
+        case 'xrpc_procedure':
+          this.#router.addProcedure(route.lexicon as any, { handler: handler as any })
+          break
+        case 'xrpc_query':
+          this.#router.addQuery(route.lexicon as any, { handler: handler as any })
+          break
+        case 'xrpc_subscription':
+          this.#router.addSubscription(route.lexicon as any, { handler: handler as any })
+          break
+        default: {
+          // Exhaustiveness — if the lexicon shape adds a new method type
+          // (unlikely; the spec hasn't changed in years), this surfaces a
+          // type error at compile time so we catch it before runtime.
+          const _exhaustive: never = route.lexicon as never
+          throw new InternalServerError(
+            `Unhandled XRPC lexicon type at install: ${String((_exhaustive as any).type)}`
+          )
+        }
+      }
+    }
+  }
+
+  /**
+   * @internal — test-only escape hatch for unit-testing `#installRoutes`
+   * without needing a real container-bound Adonis router. Production code
+   * goes through `start()`.
+   */
+  installRoutesForTesting(xrpc: XrpcRouter): void {
+    this.#installRoutes(xrpc)
   }
 
   /** Read accessor for the dispatch middleware. */

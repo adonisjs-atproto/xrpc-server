@@ -315,6 +315,114 @@ test.group('createXrpcExecutor — HTTP procedure path', (group) => {
   })
 })
 
+test.group('XrpcServer.#installRoutes', (group) => {
+  let app: any
+  group.each.setup(async () => {
+    const ctx = await setupApp()
+    app = ctx.app
+  })
+
+  test('refuses to install routes if the XrpcRouter builder is not committed', async ({
+    assert,
+  }) => {
+    const { XrpcRouter } = await import('../src/router/index.js')
+    const xrpc = new XrpcRouter(app)
+    xrpc.procedure(
+      { nsid: 'com.example.ping', type: 'xrpc_procedure' } as any,
+      () => ({ ok: true })
+    )
+    // Note: NOT calling xrpc.commit()
+
+    const mockAtcuteRouter = makeMockAtcuteRouter()
+    const mockWs = makeMockWs()
+    const xrpcServer = new XrpcServer({
+      app,
+      router: mockAtcuteRouter as any,
+      ws: mockWs as any,
+      executor: (() => undefined) as any,
+    })
+
+    // Calling the private method indirectly via start() — but start() also
+    // does container.make('router'), which requires the router getter to be
+    // installed by the provider (Plan 04). For this test, we exercise the
+    // route-install logic in isolation via a test-only escape hatch.
+    assert.throws(
+      () => (xrpcServer as any).installRoutesForTesting(xrpc),
+      /must be committed/
+    )
+  })
+
+  test('dispatches procedure/query/subscription to the matching atcute add* method', async ({
+    assert,
+  }) => {
+    const { XrpcRouter } = await import('../src/router/index.js')
+    const PROC = { nsid: 'com.example.proc', type: 'xrpc_procedure' } as const
+    const QUERY = { nsid: 'com.example.query', type: 'xrpc_query' } as const
+    const SUB = { nsid: 'com.example.sub', type: 'xrpc_subscription' } as const
+
+    const xrpc = new XrpcRouter(app)
+    xrpc.procedure(PROC as any, () => ({ ok: true }))
+    xrpc.query(QUERY as any, () => ({ ok: true }))
+    xrpc.subscription(SUB as any, async function* () {
+      yield {}
+    })
+    xrpc.commit()
+
+    const mockAtcuteRouter = makeMockAtcuteRouter()
+    const mockWs = makeMockWs()
+    const xrpcServer = new XrpcServer({
+      app,
+      router: mockAtcuteRouter as any,
+      ws: mockWs as any,
+      executor: (() => undefined) as any,
+    })
+
+    ;(xrpcServer as any).installRoutesForTesting(xrpc)
+
+    assert.lengthOf(mockAtcuteRouter.addProcedureCalls, 1)
+    assert.lengthOf(mockAtcuteRouter.addQueryCalls, 1)
+    assert.lengthOf(mockAtcuteRouter.addSubscriptionCalls, 1)
+    assert.equal(mockAtcuteRouter.addProcedureCalls[0].lexicon.nsid, 'com.example.proc')
+    assert.equal(mockAtcuteRouter.addQueryCalls[0].lexicon.nsid, 'com.example.query')
+    assert.equal(mockAtcuteRouter.addSubscriptionCalls[0].lexicon.nsid, 'com.example.sub')
+
+    // All three should have received the same handler shape — verifying the
+    // closure-deduplication design (single handler closure per server).
+    const procHandler = mockAtcuteRouter.addProcedureCalls[0].opts.handler
+    const queryHandler = mockAtcuteRouter.addQueryCalls[0].opts.handler
+    const subHandler = mockAtcuteRouter.addSubscriptionCalls[0].opts.handler
+    assert.strictEqual(procHandler, queryHandler)
+    assert.strictEqual(procHandler, subHandler)
+  })
+})
+
+function makeMockAtcuteRouter() {
+  const addProcedureCalls: { lexicon: any; opts: any }[] = []
+  const addQueryCalls: { lexicon: any; opts: any }[] = []
+  const addSubscriptionCalls: { lexicon: any; opts: any }[] = []
+  return {
+    addProcedureCalls,
+    addQueryCalls,
+    addSubscriptionCalls,
+    addProcedure(lexicon: any, opts: any) {
+      addProcedureCalls.push({ lexicon, opts })
+    },
+    addQuery(lexicon: any, opts: any) {
+      addQueryCalls.push({ lexicon, opts })
+    },
+    addSubscription(lexicon: any, opts: any) {
+      addSubscriptionCalls.push({ lexicon, opts })
+    },
+  }
+}
+
+function makeMockWs() {
+  return {
+    adapter: {},
+    injectWebSocket: () => {},
+  }
+}
+
 test.group('createXrpcExecutor — subscription path', (group) => {
   group.each.setup(async () => {
     await setupApp()

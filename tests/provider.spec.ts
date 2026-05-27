@@ -1,7 +1,7 @@
 import { test } from '@japa/runner'
 import { setupApp } from './helpers.js'
 import { XrpcServer } from '../src/xrpc_server.js'
-import { XrpcRouter } from '../src/router/index.js'
+import { XrpcRouter } from '../src/router/main.ts'
 import { XrpcService } from '../src/xrpc_service.js'
 
 test.group('XrpcProvider', () => {

@@ -11,7 +11,7 @@ import {
 import { XrpcSerializer } from '../src/serializer.js'
 import { XrpcContext } from '../src/context.js'
 import { InvalidRequestError, InternalServerError } from '../src/errors.js'
-import { XrpcRouter, type RouteInfo } from '../src/router/index.js'
+import { XrpcRouter, type RouteInfo } from '../src/router/main.ts'
 import { XrpcService, REPORTED } from '../src/xrpc_service.js'
 import { ExceptionHandler } from '../src/exception_handler.js'
 import { setupApp } from './helpers.js'

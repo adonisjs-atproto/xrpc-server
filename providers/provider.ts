@@ -4,7 +4,7 @@ import { createNodeWebSocket } from '@atcute/xrpc-server-node'
 import type { ApplicationService } from '@adonisjs/core/types'
 import type { ContainerProviderContract } from '@adonisjs/application/types'
 
-import { XrpcRouter } from '../src/router/index.js'
+import { XrpcRouter } from '../src/router/main.ts'
 import { XrpcServer } from '../src/xrpc_server.js'
 import { XrpcSerializer } from '../src/serializer.js'
 import { XrpcService, REPORTED } from '../src/xrpc_service.js'
@@ -71,9 +71,8 @@ export default class XrpcProvider implements ContainerProviderContract {
     // only way to thread the resolved XrpcRouter into the getter body.
     const xrpcRouter = await this.app.container.make(XrpcRouter)
 
-    // `configurable: true` so that re-running `boot()` across multiple
-    // `setupApp()` calls in the test suite redefines the getter cleanly
-    // rather than throwing `TypeError: Cannot redefine property`.
+    // FIXME: Switch to Router.getter
+    // https://github.com/adonisjs/http-server/pull/119
     Object.defineProperty(Router.prototype, 'xrpc', {
       get() {
         return xrpcRouter

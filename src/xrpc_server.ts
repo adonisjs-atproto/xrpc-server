@@ -30,7 +30,7 @@ import type http from 'node:http'
 import type { Duplex } from 'node:stream'
 import type { WebSocketServer } from 'ws'
 
-import type { XrpcRouter } from './router/index.js'
+import type { XrpcRouter } from './router/main.ts'
 import type { SharedXrpcExecutor } from './executor.ts'
 import { InternalServerError } from './errors.js'
 import { requestContextStore } from './request_context.js'

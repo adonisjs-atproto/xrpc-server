@@ -9,7 +9,7 @@ export { stubsRoot } from './stubs/main.ts'
 export { defineConfig } from './src/define_config.js'
 
 // Builders
-export { XrpcRouter, XrpcRoute, XrpcRouteGroup } from './src/router/index.js'
+export { XrpcRouter, XrpcRoute, XrpcRouteGroup } from './src/router/main.ts'
 
 // Runtime context types
 export { XrpcContext } from './src/context.js'

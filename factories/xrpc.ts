@@ -48,8 +48,9 @@ export class XrpcContextFactory {
     return new XrpcContext<L>({
       lexicon,
       request,
-      input: (this.#params.input as InferInput<L>) ?? (undefined as any),
-      params: (this.#params.params as InferParams<L>) ?? ({} as InferParams<L>),
+      input: (this.#params.input as unknown as InferInput<L>) ?? (undefined as any),
+      params:
+        (this.#params.params as unknown as InferParams<L>) ?? ({} as unknown as InferParams<L>),
       signal,
       logger,
       containerResolver,

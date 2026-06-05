@@ -43,6 +43,8 @@ export type {
   XrpcConfig,
   XrpcProviderConfig,
   XrpcLexicon,
+  LexiconInput,
+  ResolveLexicon,
   XrpcProcedureLexicon,
   XrpcQueryLexicon,
   XrpcSubscriptionLexicon,

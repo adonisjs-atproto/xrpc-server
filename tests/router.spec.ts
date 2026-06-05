@@ -164,6 +164,26 @@ test.group('XrpcRouter — macroable', (group) => {
   })
 })
 
+test.group('XrpcRouter — namespace-form lexicon input', () => {
+  test('subscription accepts { mainSchema } namespace object', ({ assert }) => {
+    const r = new XrpcRouter(fakeApp())
+    r.subscription({ mainSchema: subscriptionLex }, async function* () {})
+    assert.equal(r.operations.get('com.example.test.sub')?.lexicon, subscriptionLex)
+  })
+
+  test('procedure accepts { mainSchema } namespace object', ({ assert }) => {
+    const r = new XrpcRouter(fakeApp())
+    r.procedure({ mainSchema: procedureLex }, async () => ({}))
+    assert.equal(r.operations.get('com.example.test.proc')?.lexicon, procedureLex)
+  })
+
+  test('query accepts { mainSchema } namespace object', ({ assert }) => {
+    const r = new XrpcRouter(fakeApp())
+    r.query({ mainSchema: queryLex }, async () => ({}))
+    assert.equal(r.operations.get('com.example.test.query')?.lexicon, queryLex)
+  })
+})
+
 test.group('XrpcRouter — routeFor lookup', () => {
   test('returns the registered XrpcRoute for a known NSID', ({ assert }) => {
     const r = new XrpcRouter(fakeApp())

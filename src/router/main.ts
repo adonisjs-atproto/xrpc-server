@@ -4,6 +4,7 @@ import { RuntimeException } from '@adonisjs/core/exceptions'
 import type { ApplicationService } from '@adonisjs/core/types'
 import type {
   XrpcLexicon,
+  LexiconInput,
   XrpcProcedureLexicon,
   XrpcQueryLexicon,
   XrpcSubscriptionLexicon,
@@ -22,6 +23,13 @@ export { XrpcRoute } from './route.ts'
 export { XrpcRouteGroup } from './group.ts'
 export type { XrpcHandlerInput, NormalizedHandler, RouteInfo } from './types.ts'
 
+// Namespace objects from @atcute/atproto expose the lexicon under .mainSchema;
+// plain lexicon schemas (XRPCSubscriptionMetadata etc.) carry nsid/type/params
+// but have no mainSchema property. `in` is the safe runtime discriminant.
+function resolveLexicon<L extends XrpcLexicon>(input: LexiconInput<L>): L {
+  return 'mainSchema' in input ? (input as { readonly mainSchema: L }).mainSchema : (input as L)
+}
+
 // Distinguish eager class constructor from lazy-import arrow. ES6 class
 // declarations stringify as `class …`; arrows / plain functions don't.
 const isClassRegex = /^class\s/
@@ -39,19 +47,25 @@ export class XrpcRouter extends Macroable {
     super()
   }
 
-  procedure<L extends XrpcProcedureLexicon>(lexicon: L, handler: XrpcHandlerInput): XrpcRoute {
-    return this.#register(lexicon, handler)
+  procedure<L extends XrpcProcedureLexicon>(
+    lexicon: LexiconInput<L>,
+    handler: XrpcHandlerInput
+  ): XrpcRoute {
+    return this.#register(resolveLexicon(lexicon), handler)
   }
 
-  query<L extends XrpcQueryLexicon>(lexicon: L, handler: XrpcHandlerInput): XrpcRoute {
-    return this.#register(lexicon, handler)
+  query<L extends XrpcQueryLexicon>(
+    lexicon: LexiconInput<L>,
+    handler: XrpcHandlerInput
+  ): XrpcRoute {
+    return this.#register(resolveLexicon(lexicon), handler)
   }
 
   subscription<L extends XrpcSubscriptionLexicon>(
-    lexicon: L,
+    lexicon: LexiconInput<L>,
     handler: XrpcHandlerInput
   ): XrpcRoute {
-    return this.#register(lexicon, handler)
+    return this.#register(resolveLexicon(lexicon), handler)
   }
 
   group(callback: () => void): XrpcRouteGroup {

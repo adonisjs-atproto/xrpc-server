@@ -26,6 +26,24 @@ export type XrpcQueryLexicon = XRPCQueryMetadata
 export type XrpcSubscriptionLexicon = XRPCSubscriptionMetadata
 export type XrpcLexicon = XrpcProcedureLexicon | XrpcQueryLexicon | XrpcSubscriptionLexicon
 
+/**
+ * Accepts either a lexicon schema directly (`ComAtprotoLabelSubscribeLabels.mainSchema`)
+ * or the full namespace object from `@atcute/atproto` (`ComAtprotoLabelSubscribeLabels`).
+ * Pass either form to `router.xrpc.procedure/query/subscription()`.
+ */
+export type LexiconInput<L extends XrpcLexicon> = L | { readonly mainSchema: L }
+
+// Internal: resolves LexiconInput<L> → L.
+// Namespace objects from @atcute/atproto expose the lexicon under .mainSchema;
+// plain lexicon schemas carry nsid/type/params directly.
+export type ResolveLexicon<T extends LexiconInput<XrpcLexicon>> = T extends {
+  readonly mainSchema: infer L extends XrpcLexicon
+}
+  ? L
+  : T extends XrpcLexicon
+    ? T
+    : never
+
 // Schema-level inference helpers from atcute root, re-exported under
 // non-colliding names so our lexicon-level InferInput / InferOutput
 // (below) can use the natural names. Advanced consumers (e.g. extracting
@@ -61,9 +79,9 @@ export type InferOutput<L extends XrpcLexicon> =
 // Extract the params shape from a lexicon. atcute lexicons declare
 // `params: ObjectSchema | null`; when present, InferSchemaInput<schema>
 // gives the validated shape.
-export type InferParams<L extends XrpcLexicon> = L['params'] extends infer P extends BaseSchema
-  ? InferSchemaInput<P>
-  : null
+export type InferParams<L extends XrpcLexicon> = L['params'] extends BaseSchema
+  ? InferSchemaInput<L['params']>
+  : Record<never, never>
 
 /**
  * Discriminated union of all message variants declared by a subscription
@@ -71,9 +89,8 @@ export type InferParams<L extends XrpcLexicon> = L['params'] extends infer P ext
  * VariantSchema | null`; when present, the inferred shape is the union of
  * variant payloads (each carrying a `$type` discriminator).
  */
-export type MessageOf<L extends XrpcSubscriptionLexicon> = L['message'] extends infer M extends
-  BaseSchema
-  ? InferSchemaInput<M>
+export type MessageOf<L extends XrpcSubscriptionLexicon> = L['message'] extends BaseSchema
+  ? InferSchemaInput<L['message']>
   : never
 
 /**

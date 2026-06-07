@@ -1,11 +1,15 @@
 import { XRPCSubscriptionError } from '@atcute/xrpc-server'
-import { XrpcContext } from './context.ts'
+import {
+  XrpcHttpContext,
+  XrpcOperationContext,
+  XrpcSubscriptionContext,
+} from './context/main.ts'
 import { InternalServerError, NotFoundError, XrpcError } from './errors.ts'
 import { type RouteInfo } from './router/types.ts'
 import { type XrpcSerializer } from './serializer.ts'
-import { type XrpcLexicon } from './types.ts'
 import { type XrpcService, REPORTED } from './xrpc_service.ts'
 import { type RequestContext } from './request_context.ts'
+import type { XrpcProcedureLexicon, XrpcQueryLexicon } from './types.ts'
 
 /**
  * The shared executor signature — one function per package instance,
@@ -32,7 +36,7 @@ export function createXrpcExecutor(deps: {
   // NOTE: this is intentionally a non-async function. Subscription routes
   // need to return an `AsyncIterable<unknown>` *directly* — atcute's
   // `for await (const message of handler(context))` doesn't unwrap a Promise.
-  // HTTP routes return `Promise<Response>` from `XrpcContext.als.run(...)`.
+  // HTTP routes return `Promise<Response>` from `XrpcOperationContext.als.run(...)`.
   return (atcuteCtx, requestCtx) => {
     // `requestCtx` arrives materialized — by the HTTP dispatch middleware on
     // the procedure/query path, by `#installWebSocketHandler` on the WS path.
@@ -67,34 +71,11 @@ export function createXrpcExecutor(deps: {
       throw new NotFoundError(`No XRPC method registered for NSID '${nsid}'`)
     }
 
-    const xrpcCtx = new XrpcContext({
-      requestId: requestCtx.requestId,
-      // Adonis HttpRequest; atcute's Fetch Request is internal
-      request: requestCtx.request,
-      logger: requestCtx.logger,
-      containerResolver: requestCtx.containerResolver,
-      lexicon: route.lexicon,
-      input: 'input' in atcuteCtx ? atcuteCtx.input : undefined,
-      params: atcuteCtx.params,
-      signal: atcuteCtx.signal,
-    })
-    // `xrpcCtx.response` is constructed inside XrpcContext's constructor —
-    // XrpcStream for subscription routes (signal threaded through),
-    // XrpcResponse (with default state) for procedure/query.
-
-    // `route.handler` is already the normalized form — Plan 01's
-    // `XrpcRouter.#normalizeHandler` ran at register time, so eager class
-    // refs went through fold's `moduleCaller` and lazy imports went through
-    // `moduleImporter`. The executor just branches on `kind`.
-    const invokeHandler = (ctx: XrpcContext<XrpcLexicon>): unknown =>
+    const invokeHandler = (ctx: XrpcOperationContext): unknown =>
       route.handler.kind === 'function'
         ? route.handler.fn(ctx)
         : route.handler.handle(ctx.containerResolver, ctx)
 
-    // HTTP path: enter the XrpcContext ALS scope and await the handler. The
-    // `await` continuations re-enter the scope on each microtask boundary, so
-    // downstream code calling `XrpcContext.getOrFail()` works as expected.
-    //
     // Subscription path: DO NOT wrap the iterable's iteration in als.run here.
     // Async generators capture context at each `.next()` call, not at
     // construction. Returning the iterable out of `als.run` would put each
@@ -102,17 +83,41 @@ export function createXrpcExecutor(deps: {
     // empirically (Node 26). Instead, `wrapSubscriptionIterator` takes
     // `xrpcCtx` and re-enters the scope on each inner `.next()`.
     if (route.lexicon.type === 'xrpc_subscription') {
+      const xrpcCtx = new XrpcSubscriptionContext({
+        requestId: requestCtx.requestId,
+        request: requestCtx.request,
+        logger: requestCtx.logger,
+        containerResolver: requestCtx.containerResolver,
+        lexicon: route.lexicon,
+        params: atcuteCtx.params,
+        signal: atcuteCtx.signal,
+      })
       // The handler() invocation that returns the AsyncIterable needs to run
       // inside als.run too — the handler may construct its iterator from
-      // service calls that themselves read XrpcContext.
-      const userIterable = XrpcContext.als.run(
+      // service calls that themselves read XrpcOperationContext.
+      const userIterable = XrpcOperationContext.als.run(
         xrpcCtx,
         () => invokeHandler(xrpcCtx) as AsyncIterable<unknown>
       )
       return wrapSubscriptionIterator(userIterable, xrpcCtx, xrpc, serializer)
     }
 
-    return XrpcContext.als.run(xrpcCtx, async () => {
+    // HTTP path: enter the XrpcOperationContext ALS scope and await the
+    // handler. The `await` continuations re-enter the scope on each microtask
+    // boundary, so downstream code calling `XrpcHttpContext.getOrFail()` works
+    // as expected.
+    const xrpcCtx = new XrpcHttpContext({
+      requestId: requestCtx.requestId,
+      request: requestCtx.request,
+      logger: requestCtx.logger,
+      containerResolver: requestCtx.containerResolver,
+      lexicon: route.lexicon as XrpcQueryLexicon | XrpcProcedureLexicon,
+      input: 'input' in atcuteCtx ? atcuteCtx.input : undefined,
+      params: atcuteCtx.params,
+      signal: atcuteCtx.signal,
+    })
+
+    return XrpcOperationContext.als.run(xrpcCtx, async () => {
       try {
         const result = await invokeHandler(xrpcCtx)
 
@@ -121,7 +126,7 @@ export function createXrpcExecutor(deps: {
         // value with `output instanceof Response` and silently falls back to
         // `new Response(null)` for non-Response returns. We construct the
         // Response here so clients receive the actual serialized body.
-        const respState = (xrpcCtx.response as { state: any }).state
+        const respState = xrpcCtx.response.state
 
         if (respState.redirect) {
           return Response.redirect(respState.redirect.url, respState.redirect.status)
@@ -161,11 +166,14 @@ export function createXrpcExecutor(deps: {
  * Fallback (no handler registered): wrap non-XrpcError as
  * InternalServerError with `{ cause }` — preserves the Plan 03 default
  * for tests and consumers who haven't wired `start/kernel.ts` yet.
+ *
+ * Param type is XrpcOperationContext (non-generic) — only reads shared
+ * fields (logger) that live on the base.
  */
 async function runConsumerHandler(
   xrpc: XrpcService,
   err: unknown,
-  xrpcCtx: XrpcContext<XrpcLexicon>
+  xrpcCtx: XrpcOperationContext
 ): Promise<XrpcError> {
   const handler = await xrpc.getRegisteredErrorHandler()
 
@@ -202,8 +210,8 @@ async function runConsumerHandler(
  * Wraps a user-provided async-generator subscription handler with a
  * transforming generator that:
  *
- * 1. Re-enters the `XrpcContext.als` scope on every inner `.next()` call so
- *    downstream code calling `XrpcContext.getOrFail()` from inside yields
+ * 1. Re-enters the `XrpcOperationContext.als` scope on every inner `.next()` call so
+ *    downstream code calling `XrpcSubscriptionContext.getOrFail()` from inside yields
  *    sees the current context. Async generators capture context at `.next()`
  *    time (NOT at construction); a one-shot `als.run` around iterator
  *    construction doesn't propagate.
@@ -217,22 +225,22 @@ async function runConsumerHandler(
  */
 async function* wrapSubscriptionIterator(
   iterable: AsyncIterable<unknown>,
-  xrpcCtx: XrpcContext<XrpcLexicon>,
+  xrpcCtx: XrpcSubscriptionContext,
   xrpc: XrpcService,
   serializer: XrpcSerializer
 ): AsyncGenerator<unknown> {
   // Only needs xrpcCtx — containerResolver (for serialization) and the full
-  // context (for the error reporter) both live on XrpcContext.
+  // context (for the error reporter) both live on XrpcOperationContext.
   const inner = iterable[Symbol.asyncIterator]()
   try {
     while (true) {
-      // Each .next() runs inside the XrpcContext ALS scope. The user's
+      // Each .next() runs inside the XrpcOperationContext ALS scope. The user's
       // generator body resumes inside this scope and any downstream
-      // `XrpcContext.getOrFail()` call sees `xrpcCtx`. Async generators
+      // `XrpcSubscriptionContext.getOrFail()` call sees `xrpcCtx`. Async generators
       // capture context at .next() time, not construction.
-      const result = await XrpcContext.als.run(xrpcCtx, () => inner.next())
+      const result = await XrpcOperationContext.als.run(xrpcCtx, () => inner.next())
       if (result.done) return
-      // Serialization doesn't need to read XrpcContext via the ALS, so it
+      // Serialization doesn't need to read XrpcOperationContext via the ALS, so it
       // stays outside the scope — keeps the scope window tight to just
       // handler execution.
       yield await serializer.serializeWithoutWrapping(result.value, xrpcCtx.containerResolver)

@@ -2,7 +2,7 @@
 
 **Status:** Draft — awaiting review
 **Date:** 2026-06-07
-**Subject:** Split the single `XrpcContext<L>` class into a discriminated union of `XrpcHttpContext` (query + procedure) and `XrpcSubscriptionContext`, anchored on an abstract `XrpcOperationContext<L>` base.
+**Subject:** Split the single `XrpcContext<L>` class into a discriminated union of `XrpcHttpContext<L>` (query + procedure) and `XrpcSubscriptionContext<L>`, anchored on a non-generic abstract `XrpcOperationContext` base that holds only cross-cutting fields.
 **Builds on:** [`2026-05-19-adonisjs-atproto-xrpc-design.md`](./2026-05-19-adonisjs-atproto-xrpc-design.md) (canonical package design).
 
 ## Summary
@@ -13,7 +13,7 @@ This spec reshapes the type as a textbook discriminated union: an abstract base 
 
 A single `AsyncLocalStorage` lives on the abstract base. Each subclass exposes typed `static get() / getOrFail()` accessors that read the shared storage and narrow via `instanceof` — so consumers get one of three access patterns:
 
-- `XrpcOperationContext.getOrFail()` — returns the union; for code that only reads shared fields (logger, containerResolver) and doesn't care which kind of handler scope it's in. The existing `XrpcContext.get()` callers in `providers/provider.ts` (exception reporting) fall into this bucket.
+- `XrpcOperationContext.getOrFail()` — returns the non-generic base reference; for code that only reads cross-cutting fields (logger, containerResolver, requestId) and doesn't care which kind of handler scope it's in. The existing `XrpcContext.get()` callers in `providers/provider.ts` (exception reporting) fall into this bucket.
 - `XrpcHttpContext.getOrFail()` — returns the narrowed `XrpcHttpContext`; throws cleanly if called from a subscription scope.
 - `XrpcSubscriptionContext.getOrFail()` — symmetric.
 
@@ -40,9 +40,10 @@ The current `src/context.ts` becomes a directory mirroring the `src/router/` con
 ```
 src/
 └── context/
-    ├── operation.ts      — XrpcOperationContext<L> (abstract base, ALS, shared fields)
+    ├── operation.ts      — XrpcOperationContext (non-generic abstract base, ALS, cross-cutting fields)
     ├── http.ts           — XrpcHttpContext<L> (query + procedure)
     ├── subscription.ts   — XrpcSubscriptionContext<L>
+    ├── helpers.ts        — isHttpContext / isSubscriptionContext type-guard predicates
     └── main.ts           — re-exports + the XrpcContext<L> type alias
 ```
 
@@ -53,16 +54,22 @@ src/
 ```ts
 // src/context/operation.ts
 
-export abstract class XrpcOperationContext<L extends XrpcLexicon> extends Macroable {
+// Non-generic base. Lexicon-typed fields (lexicon, params, input, response,
+// stream) live on the concrete subclasses; the base only holds cross-cutting
+// fields whose types don't depend on the lexicon. This keeps the ALS storage
+// type, the base accessors, and `instanceof` narrowing simple, and lets
+// `XrpcOperationContext.getOrFail()` return a non-generic reference suitable
+// for context-agnostic infrastructure code.
+export abstract class XrpcOperationContext extends Macroable {
   // Single storage for both subclasses. Executor writes once per request;
   // subclass-typed accessors instanceof-narrow on read.
-  static readonly als = new AsyncLocalStorage<XrpcOperationContext<XrpcLexicon>>()
+  static readonly als = new AsyncLocalStorage<XrpcOperationContext>()
 
-  static get(): XrpcOperationContext<XrpcLexicon> | undefined {
+  static get(): XrpcOperationContext | undefined {
     return XrpcOperationContext.als.getStore()
   }
 
-  static getOrFail(): XrpcOperationContext<XrpcLexicon> {
+  static getOrFail(): XrpcOperationContext {
     const ctx = XrpcOperationContext.als.getStore()
     if (!ctx) {
       throw new RuntimeException(
@@ -75,18 +82,14 @@ export abstract class XrpcOperationContext<L extends XrpcLexicon> extends Macroa
   abstract readonly type: 'query' | 'procedure' | 'subscription'
 
   readonly request: HttpRequest
-  readonly lexicon: L
-  readonly params: InferParams<L>
   readonly signal: AbortSignal
   readonly logger: Logger
   readonly containerResolver: ContainerResolver<any>
   readonly requestId: string
 
-  protected constructor(params: XrpcOperationContextParams<L>) {
+  protected constructor(params: XrpcOperationContextParams) {
     super()
     this.request = params.request
-    this.lexicon = params.lexicon
-    this.params = params.params
     this.signal = params.signal
     this.logger = params.logger
     this.containerResolver = params.containerResolver
@@ -100,7 +103,7 @@ export abstract class XrpcOperationContext<L extends XrpcLexicon> extends Macroa
 
 export class XrpcHttpContext<
   L extends XrpcQueryLexicon | XrpcProcedureLexicon = XrpcQueryLexicon | XrpcProcedureLexicon,
-> extends XrpcOperationContext<L> {
+> extends XrpcOperationContext {
   // Shadow the base's accessors with subclass-typed returns. Both read the
   // shared XrpcOperationContext.als; the instanceof check is what narrows.
   static get(): XrpcHttpContext | undefined {
@@ -119,11 +122,15 @@ export class XrpcHttpContext<
   }
 
   readonly type: 'query' | 'procedure'
+  readonly lexicon: L
+  readonly params: InferParams<L>
   readonly input: InferInput<L>
   readonly response: XrpcResponse<L>
 
   constructor(params: XrpcHttpContextParams<L>) {
     super(params)
+    this.lexicon = params.lexicon
+    this.params = params.params
     this.type = params.lexicon.type === 'xrpc_query' ? 'query' : 'procedure'
     this.input = params.input
     this.response = new XrpcResponse<L>()
@@ -136,7 +143,7 @@ export class XrpcHttpContext<
 
 export class XrpcSubscriptionContext<
   L extends XrpcSubscriptionLexicon = XrpcSubscriptionLexicon,
-> extends XrpcOperationContext<L> {
+> extends XrpcOperationContext {
   static get(): XrpcSubscriptionContext | undefined {
     const ctx = XrpcOperationContext.als.getStore()
     return ctx instanceof XrpcSubscriptionContext ? ctx : undefined
@@ -153,10 +160,14 @@ export class XrpcSubscriptionContext<
   }
 
   readonly type = 'subscription' as const
+  readonly lexicon: L
+  readonly params: InferParams<L>
   readonly stream: XrpcStream<L>
 
   constructor(params: XrpcSubscriptionContextParams<L>) {
     super(params)
+    this.lexicon = params.lexicon
+    this.params = params.params
     this.stream = new XrpcStream<L>(params.lexicon, params.signal)
   }
 }
@@ -168,11 +179,18 @@ export class XrpcSubscriptionContext<
 export { XrpcOperationContext } from './operation.js'
 export { XrpcHttpContext } from './http.js'
 export { XrpcSubscriptionContext } from './subscription.js'
+export { isHttpContext, isSubscriptionContext } from './helpers.js'
 
 // Public union-alias surface — what handler authors annotate with.
 // Because TypeScript reduces conditional type aliases eagerly when L is
 // concrete, `XrpcContext<typeof myProcedureLex>` resolves directly to
 // `XrpcHttpContext<...>` at the handler site. No narrowing required.
+//
+// For wide L (e.g. `XrpcContext<XrpcLexicon>`), the conditional distributes
+// over the lexicon union, yielding `XrpcHttpContext<XrpcQueryLexicon> |
+// XrpcHttpContext<XrpcProcedureLexicon> | XrpcSubscriptionContext<XrpcSubscriptionLexicon>`
+// — i.e. the full discriminated union. Use this form in signatures that
+// accept any kind of context.
 export type XrpcContext<L extends XrpcLexicon> =
   L extends XrpcSubscriptionLexicon
     ? XrpcSubscriptionContext<L>
@@ -181,33 +199,74 @@ export type XrpcContext<L extends XrpcLexicon> =
       : never
 ```
 
+### Predicate helpers
+
+`src/context/helpers.ts` exports two type-guard predicates. They complement the static `XrpcHttpContext.getOrFail()` / `XrpcSubscriptionContext.getOrFail()` accessors: those are for retrieving the context from ALS, narrowed at the storage boundary; these are for narrowing a context reference you already hold.
+
+```ts
+// src/context/helpers.ts
+
+import { XrpcHttpContext } from './http.js'
+import { XrpcSubscriptionContext } from './subscription.js'
+import type { XrpcOperationContext } from './operation.js'
+
+/**
+ * Narrows a context reference to `XrpcHttpContext`. Useful when consumer code
+ * receives an `XrpcOperationContext` (or the wide `XrpcContext<XrpcLexicon>`
+ * union) and needs to read `.response` / `.input` / lexicon-typed fields.
+ */
+export function isHttpContext(ctx: XrpcOperationContext): ctx is XrpcHttpContext {
+  return ctx instanceof XrpcHttpContext
+}
+
+/**
+ * Narrows a context reference to `XrpcSubscriptionContext`. Symmetric to
+ * `isHttpContext` — for code that needs to read `.stream` or
+ * subscription-lexicon-typed fields.
+ */
+export function isSubscriptionContext(
+  ctx: XrpcOperationContext
+): ctx is XrpcSubscriptionContext {
+  return ctx instanceof XrpcSubscriptionContext
+}
+```
+
+Both predicates are thin wrappers over `instanceof`. The win is readability at consumer call sites — `if (isSubscriptionContext(ctx))` documents intent better than `if (ctx instanceof XrpcSubscriptionContext)`, and the helper doesn't require importing the class type just to narrow.
+
+These are the resolution of the predicate-helper option flagged in the `xrpc-context-response-narrowing` memory note. They land alongside the discriminated-union restructuring rather than as a replacement for it — the union shape is the primary fix; predicates are the convenience over the resulting class hierarchy.
+
 ### Constructor parameters
 
-Three parameter interfaces, paralleling the class hierarchy:
+Three parameter interfaces paralleling the class hierarchy. The base's params interface is non-generic (matches the non-generic base class); both subclass params add lexicon-typed fields.
 
 ```ts
 // Shared — lives in src/context/operation.ts with the base class.
-interface XrpcOperationContextParams<L extends XrpcLexicon> {
+// Non-generic: only cross-cutting fields whose types don't depend on the lexicon.
+interface XrpcOperationContextParams {
   request: HttpRequest
-  lexicon: L
-  params: InferParams<L>
   signal: AbortSignal
   logger: Logger
   containerResolver: ContainerResolver<any>
   requestId: string
 }
 
-// HTTP — adds `input` (typed `InferInput<L>`, which is `undefined` for queries
-// and the body for procedures).
+// HTTP — adds lexicon, params, and input. `input` is typed `InferInput<L>`,
+// which is `undefined` for queries and the body for procedures.
 interface XrpcHttpContextParams<L extends XrpcQueryLexicon | XrpcProcedureLexicon>
-  extends XrpcOperationContextParams<L> {
+  extends XrpcOperationContextParams {
+  lexicon: L
+  params: InferParams<L>
   input: InferInput<L>
 }
 
-// Subscription — no extra params; XrpcStream is constructed from the lexicon
-// and signal already on the base params.
+// Subscription — adds lexicon and params. XrpcStream is constructed from the
+// lexicon and signal inside the subclass constructor; no separate `stream`
+// param needed.
 interface XrpcSubscriptionContextParams<L extends XrpcSubscriptionLexicon>
-  extends XrpcOperationContextParams<L> {}
+  extends XrpcOperationContextParams {
+  lexicon: L
+  params: InferParams<L>
+}
 ```
 
 The existing `XrpcContextParams<L>` interface is removed. Callers update to the appropriate subtype.
@@ -216,7 +275,7 @@ The existing `XrpcContextParams<L>` interface is removed. Callers update to the 
 
 | Use case | Call | Returns |
 |---|---|---|
-| Context-agnostic read (logger, containerResolver, requestId) — typically infrastructure code that doesn't care which kind of handler scope it's in | `XrpcOperationContext.getOrFail()` | `XrpcOperationContext<XrpcLexicon>` (the union); shared fields directly typed |
+| Context-agnostic read (logger, containerResolver, requestId) — typically infrastructure code that doesn't care which kind of handler scope it's in | `XrpcOperationContext.getOrFail()` | `XrpcOperationContext` (non-generic); cross-cutting fields directly typed. For lexicon-typed reads, narrow with `isHttpContext` / `isSubscriptionContext` from `src/context/helpers.ts`. |
 | HTTP-handler-side service code that needs `ctx.response` | `XrpcHttpContext.getOrFail()` | `XrpcHttpContext`; throws if currently in a subscription scope |
 | Subscription-handler-side service code that needs `ctx.stream` | `XrpcSubscriptionContext.getOrFail()` | `XrpcSubscriptionContext`; throws if currently in an HTTP scope |
 
@@ -269,7 +328,7 @@ const xrpcCtx = new XrpcHttpContext({
 return XrpcOperationContext.als.run(xrpcCtx, async () => { /* same body as today */ })
 ```
 
-`wrapSubscriptionIterator` updates its parameter type from `XrpcContext<XrpcLexicon>` to `XrpcSubscriptionContext`, and the inner `.next()` ALS re-entry uses `XrpcOperationContext.als.run(...)` (the shared base ALS — same instance, just a different exporting class). `runConsumerHandler` updates its parameter type to `XrpcOperationContext<XrpcLexicon>` (the union — it only reads shared fields like `logger`).
+`wrapSubscriptionIterator` updates its parameter type from `XrpcContext<XrpcLexicon>` to `XrpcSubscriptionContext`, and the inner `.next()` ALS re-entry uses `XrpcOperationContext.als.run(...)` (the shared base ALS — same instance, just a different exporting class). `runConsumerHandler` updates its parameter type to `XrpcOperationContext` (non-generic — it only reads shared fields like `logger`).
 
 ## Migration impact
 
@@ -278,13 +337,13 @@ return XrpcOperationContext.als.run(xrpcCtx, async () => { /* same body as today
 | File | Change |
 |---|---|
 | `src/executor.ts` | Branch on lexicon kind picks subclass; `XrpcContext.als` → `XrpcOperationContext.als`. |
-| `src/exception_handler.ts` | Type-only import — `XrpcContext` → `XrpcOperationContext` for the union case, or the concrete subclass for kind-specific reporters. |
+| `src/exception_handler.ts` | Type-only import — `XrpcContext` → `XrpcOperationContext` (non-generic) for the union case, or the concrete subclass for kind-specific reporters. |
 | `providers/provider.ts:208,255` | `XrpcContext.get() ?? null` → `XrpcOperationContext.get() ?? null`. (Reports run against either kind; the union is correct.) |
 | `index.ts:15` | `export { XrpcContext } from './src/context.js'` → re-export the three concrete classes + the `XrpcContext` type alias from `./src/context/main.js`. |
 | `factories/xrpc.ts` (`XrpcContextFactory`) | `create()` becomes an overloaded method that narrows its return type based on the inferred lexicon kind — see [Factory narrowing](#factory-narrowing) below. Runtime branches on `lexicon.type` to construct the right subclass. |
 | `tests/context.spec.ts` | Reorganise: split into `tests/context/operation.spec.ts`, `tests/context/http.spec.ts`, `tests/context/subscription.spec.ts`. The ALS / Macroable tests move to the operation spec; the response-state tests move to http; the stream tests move to subscription. The cast workaround in the construction helper goes away. |
 | `tests/xrpc_server.spec.ts:288,297` | `XrpcContext.als.getStore()` → `XrpcOperationContext.als.getStore()`. (The test is about ALS scope re-entry inside subscription iteration; it doesn't care about narrowing.) |
-| `tests/provider_error_reporting.spec.ts:36,40` | `XrpcContext<XrpcLexicon> \| null` → `XrpcOperationContext<XrpcLexicon> \| null` in the reporter signature. |
+| `tests/provider_error_reporting.spec.ts:36,40` | `XrpcContext<XrpcLexicon> \| null` → `XrpcOperationContext \| null` (non-generic) in the reporter signature. |
 | `tests/factory.spec.ts:3` | `XrpcContext` type ref updates to whichever concrete class the factory returns. |
 
 ### Factory narrowing

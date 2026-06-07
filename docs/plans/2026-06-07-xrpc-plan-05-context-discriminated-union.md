@@ -59,7 +59,7 @@
 ## Notes on conventions
 
 - **File extensions in imports:** This repo uses `.ts` import specifiers internally and relies on the build pipeline (`tsdown`) to rewrite to `.js`. The exception is `index.ts` and configure-related re-exports which use `.js` because they're the published surface. Follow the existing pattern in each file you modify — match what's already there.
-- **Commit messages:** Conventional commits (`feat(scope):`, `refactor(scope):`, etc.). The scope `context` is appropriate for the new module; `executor`, `provider`, `factory` for those callers. Examples in this plan are illustrative — match the project's actual recent commit style if it differs.
+- **Commit messages:** [Scoped Commits](https://scopedcommits.com/) format — `<scope>: <description>`, optional body, optional trailers. No type prefix (`feat:` / `refactor:` / `chore:`). Use lowercase scope; the description can be either case but match the spec's terse style. The scope identifies the *subsystem* changed, not the *kind* of change — the kind reads off the description prose. Typical scopes for this plan: `context`, `executor`, `provider`, `factory`, `tests/context`, `tests`. Multiple scopes can be comma-separated; nested scopes are OK (`tests/context: helpers: ...`). For project-wide changes, an umbrella scope like `global` or `all` is acceptable.
 - **No `--no-gpg-sign` exception for plan 05.** Plan 04's CLAUDE.md exception is scoped to plans 01–04. Plan 05 commits sign normally; Emelia will Touch ID each commit. If the signing prompts become a workflow blocker during execution, surface that to Emelia rather than silently bypassing.
 - **Test runner:** `pnpm quick:test --files <glob>` runs a single file. `pnpm test` runs the full pipeline (lint + typecheck + tests).
 - **Lint and typecheck:** `pnpm lint` (which itself runs `typecheck`) and `pnpm typecheck` standalone. `pretest` runs `pnpm lint` automatically so `pnpm test` is the safety net.
@@ -196,7 +196,7 @@ Expected: PASS (no errors). The new file is self-contained and doesn't yet affec
 
 ```bash
 git add src/context/operation.ts tests/context/operation.spec.ts
-git commit -m "feat(context): scaffold XrpcOperationContext abstract base"
+git commit -m "context: scaffold XrpcOperationContext abstract base"
 ```
 
 ---
@@ -477,7 +477,7 @@ Expected: PASS.
 
 ```bash
 git add src/context/http.ts tests/context/http.spec.ts
-git commit -m "feat(context): add XrpcHttpContext subclass for query + procedure"
+git commit -m "context: add XrpcHttpContext subclass for query + procedure"
 ```
 
 ---
@@ -690,7 +690,7 @@ Expected: PASS.
 
 ```bash
 git add src/context/subscription.ts tests/context/subscription.spec.ts
-git commit -m "feat(context): add XrpcSubscriptionContext subclass"
+git commit -m "context: add XrpcSubscriptionContext subclass"
 ```
 
 ---
@@ -894,7 +894,7 @@ Expected: PASS.
 
 ```bash
 git add src/context/helpers.ts src/context/main.ts tests/context/helpers.spec.ts
-git commit -m "feat(context): add predicate helpers + main.ts public surface"
+git commit -m "context: add predicate helpers + main.ts public surface"
 ```
 
 ---
@@ -1112,7 +1112,7 @@ Expected: PASS. The executor is now using the new classes; existing tests of dis
 
 ```bash
 git add src/executor.ts
-git commit -m "refactor(executor): construct XrpcHttpContext / XrpcSubscriptionContext per kind"
+git commit -m "executor: construct XrpcHttpContext / XrpcSubscriptionContext per kind"
 ```
 
 ---
@@ -1259,7 +1259,7 @@ Expected: PASS. The OLD `src/context.ts` is still present (deleted in Task 10), 
 
 ```bash
 git add providers/provider.ts src/exception_handler.ts index.ts package.json
-git commit -m "refactor(context): migrate provider + exception_handler + index to new module"
+git commit -m "provider, exception_handler, index: migrate to new context module"
 ```
 
 ---
@@ -1393,7 +1393,7 @@ Some tests may fail — `tests/factory.spec.ts` imports `XrpcContext` as a value
 
 ```bash
 git add factories/xrpc.ts
-git commit -m "refactor(factory): overload XrpcContextFactory.create per lexicon kind"
+git commit -m "factory: overload XrpcContextFactory.create per lexicon kind"
 ```
 
 ---
@@ -1450,7 +1450,7 @@ If lint or typecheck still flags issues from other files (`tests/provider_error_
 
 ```bash
 git add tests/
-git commit -m "test(context): migrate context.spec.ts into per-class spec files"
+git commit -m "tests/context: migrate context.spec.ts into per-class spec files"
 ```
 
 ---
@@ -1638,7 +1638,7 @@ Expected: PASS — lint + typecheck + all tests green.
 
 ```bash
 git add tests/provider_error_reporting.spec.ts tests/xrpc_server.spec.ts tests/factory.spec.ts
-git commit -m "test(context): update remaining test files for new context module"
+git commit -m "tests: update remaining test files for new context module"
 ```
 
 ---
@@ -1684,7 +1684,7 @@ Expected: PASS. This guards against breaking the published subpath exports.
 
 ```bash
 git add src/
-git commit -m "refactor(context): delete src/context.ts (replaced by src/context/ module)"
+git commit -m "context: delete src/context.ts (replaced by src/context/ module)"
 ```
 
 ---
@@ -1731,7 +1731,7 @@ Commit the generated changeset file:
 
 ```bash
 git add .changeset/
-git commit -m "chore: add changeset for context discriminated-union refactor"
+git commit -m "changeset: add patch entry for context discriminated-union refactor"
 ```
 
 ---

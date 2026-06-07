@@ -13,8 +13,9 @@ import type {
  * params with lexicon and params; XrpcStream is constructed from the
  * lexicon + signal inside the subclass constructor.
  */
-export interface XrpcSubscriptionContextParams<L extends XrpcSubscriptionLexicon>
-  extends XrpcOperationContextParams {
+export interface XrpcSubscriptionContextParams<
+  L extends XrpcSubscriptionLexicon,
+> extends XrpcOperationContextParams {
   lexicon: L
   params: InferParams<L>
 }
@@ -38,9 +39,9 @@ export class XrpcSubscriptionContext<
    * takes for registration. Caller-assertion semantics for L (same trade-
    * off as XrpcHttpContext.get / getOrFail — see those doc comments).
    */
-  static get<
-    T extends LexiconInput<XrpcSubscriptionLexicon> = XrpcSubscriptionLexicon,
-  >(): XrpcSubscriptionContext<ResolveLexicon<T>> | undefined {
+  static get<T extends LexiconInput<XrpcSubscriptionLexicon> = XrpcSubscriptionLexicon>():
+    | XrpcSubscriptionContext<ResolveLexicon<T>>
+    | undefined {
     const ctx = XrpcOperationContext.als.getStore()
     return ctx instanceof XrpcSubscriptionContext
       ? (ctx as XrpcSubscriptionContext<ResolveLexicon<T>>)

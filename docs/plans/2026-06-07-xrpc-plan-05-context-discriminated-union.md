@@ -18,36 +18,36 @@
 
 **New files:**
 
-| Path | Responsibility |
-|---|---|
-| `src/context/operation.ts` | Non-generic abstract `XrpcOperationContext` base. Holds the shared ALS, the static `get / getOrFail` returning the base reference, and cross-cutting fields (`request`, `signal`, `logger`, `containerResolver`, `requestId`, abstract `type` discriminator). Extends `Macroable`. |
-| `src/context/http.ts` | `XrpcHttpContext<L>` subclass for query + procedure. Adds `lexicon`, `params`, `input`, `response: XrpcResponse<L>`. Subclass `static get / getOrFail<T extends LexiconInput<...>>` accessors that `instanceof`-narrow on the shared base ALS. |
-| `src/context/subscription.ts` | `XrpcSubscriptionContext<L>` subclass. Adds `lexicon`, `params`, `stream: XrpcStream<L>`. Mirror static accessors. |
-| `src/context/helpers.ts` | Type-guard predicates `isHttpContext` / `isSubscriptionContext`. Generic over `Ctx extends XrpcOperationContext` so narrowing preserves the input's L. |
-| `src/context/main.ts` | Re-exports all four files + the `XrpcContext<L>` public type alias. Entrypoint for callers (replaces `src/context.ts`). |
-| `tests/context/operation.spec.ts` | Tests the abstract base's ALS, Macroable static, cross-cutting fields. |
-| `tests/context/http.spec.ts` | Tests `XrpcHttpContext` instantiation, `.response` access, ALS narrowing, lexicon-typed accessor (`LexiconInput<L>` form), inherited base fields, Macroable extension, `XrpcResponse` chainable setters via `ctx.response`. |
-| `tests/context/subscription.spec.ts` | Tests `XrpcSubscriptionContext` instantiation, `.stream` access, ALS narrowing, lexicon-typed accessor, `XrpcStream` `signal`/`aborted`/`message()` helpers via `ctx.stream`. |
-| `tests/context/helpers.spec.ts` | Tests both predicates: narrowing on subclass instances, narrowing through generic `Ctx`, runtime `false` on wrong-kind. |
+| Path                                 | Responsibility                                                                                                                                                                                                                                                                     |
+| ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/context/operation.ts`           | Non-generic abstract `XrpcOperationContext` base. Holds the shared ALS, the static `get / getOrFail` returning the base reference, and cross-cutting fields (`request`, `signal`, `logger`, `containerResolver`, `requestId`, abstract `type` discriminator). Extends `Macroable`. |
+| `src/context/http.ts`                | `XrpcHttpContext<L>` subclass for query + procedure. Adds `lexicon`, `params`, `input`, `response: XrpcResponse<L>`. Subclass `static get / getOrFail<T extends LexiconInput<...>>` accessors that `instanceof`-narrow on the shared base ALS.                                     |
+| `src/context/subscription.ts`        | `XrpcSubscriptionContext<L>` subclass. Adds `lexicon`, `params`, `stream: XrpcStream<L>`. Mirror static accessors.                                                                                                                                                                 |
+| `src/context/helpers.ts`             | Type-guard predicates `isHttpContext` / `isSubscriptionContext`. Generic over `Ctx extends XrpcOperationContext` so narrowing preserves the input's L.                                                                                                                             |
+| `src/context/main.ts`                | Re-exports all four files + the `XrpcContext<L>` public type alias. Entrypoint for callers (replaces `src/context.ts`).                                                                                                                                                            |
+| `tests/context/operation.spec.ts`    | Tests the abstract base's ALS, Macroable static, cross-cutting fields.                                                                                                                                                                                                             |
+| `tests/context/http.spec.ts`         | Tests `XrpcHttpContext` instantiation, `.response` access, ALS narrowing, lexicon-typed accessor (`LexiconInput<L>` form), inherited base fields, Macroable extension, `XrpcResponse` chainable setters via `ctx.response`.                                                        |
+| `tests/context/subscription.spec.ts` | Tests `XrpcSubscriptionContext` instantiation, `.stream` access, ALS narrowing, lexicon-typed accessor, `XrpcStream` `signal`/`aborted`/`message()` helpers via `ctx.stream`.                                                                                                      |
+| `tests/context/helpers.spec.ts`      | Tests both predicates: narrowing on subclass instances, narrowing through generic `Ctx`, runtime `false` on wrong-kind.                                                                                                                                                            |
 
 **Modified files:**
 
-| Path | What changes |
-|---|---|
-| `src/executor.ts` | Import from `./context/main.js`. Branch on `route.lexicon.type === 'xrpc_subscription'` for subclass selection. Use `XrpcOperationContext.als.run(...)` (shared base ALS). `wrapSubscriptionIterator` parameter type → `XrpcSubscriptionContext`. `runConsumerHandler` parameter type → `XrpcOperationContext`. |
-| `src/exception_handler.ts` | Type imports: `XrpcContext<XrpcLexicon>` → `XrpcOperationContext` on `report` / `handle` signatures. |
-| `index.ts` | Re-export point switches from `./src/context.js` to `./src/context/main.js`. Re-export the new classes + helpers + type alias. |
-| `providers/provider.ts` | Import switches to `../src/context/main.js`. `XrpcContext.get()` → `XrpcOperationContext.get()` at lines 208 and 255. |
-| `factories/xrpc.ts` | `create()` becomes an overloaded method (3 signatures + implementation). Runtime branch on `lexicon.type`. |
-| `tests/provider_error_reporting.spec.ts` | Type import update; `XrpcContext<XrpcLexicon> \| null` → `XrpcOperationContext \| null`. |
-| `tests/xrpc_server.spec.ts` | `XrpcContext.als.getStore()` → `XrpcOperationContext.als.getStore()` (lines 288, 297). Import update. |
-| `tests/factory.spec.ts` | Type ref update for factory return. |
+| Path                                     | What changes                                                                                                                                                                                                                                                                                                    |
+| ---------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/executor.ts`                        | Import from `./context/main.js`. Branch on `route.lexicon.type === 'xrpc_subscription'` for subclass selection. Use `XrpcOperationContext.als.run(...)` (shared base ALS). `wrapSubscriptionIterator` parameter type → `XrpcSubscriptionContext`. `runConsumerHandler` parameter type → `XrpcOperationContext`. |
+| `src/exception_handler.ts`               | Type imports: `XrpcContext<XrpcLexicon>` → `XrpcOperationContext` on `report` / `handle` signatures.                                                                                                                                                                                                            |
+| `index.ts`                               | Re-export point switches from `./src/context.js` to `./src/context/main.js`. Re-export the new classes + helpers + type alias.                                                                                                                                                                                  |
+| `providers/provider.ts`                  | Import switches to `../src/context/main.js`. `XrpcContext.get()` → `XrpcOperationContext.get()` at lines 208 and 255.                                                                                                                                                                                           |
+| `factories/xrpc.ts`                      | `create()` becomes an overloaded method (3 signatures + implementation). Runtime branch on `lexicon.type`.                                                                                                                                                                                                      |
+| `tests/provider_error_reporting.spec.ts` | Type import update; `XrpcContext<XrpcLexicon> \| null` → `XrpcOperationContext \| null`.                                                                                                                                                                                                                        |
+| `tests/xrpc_server.spec.ts`              | `XrpcContext.als.getStore()` → `XrpcOperationContext.als.getStore()` (lines 288, 297). Import update.                                                                                                                                                                                                           |
+| `tests/factory.spec.ts`                  | Type ref update for factory return.                                                                                                                                                                                                                                                                             |
 
 **Deleted files:**
 
-| Path | Reason |
-|---|---|
-| `src/context.ts` | Replaced entirely by `src/context/main.ts` + four sibling files. |
+| Path                    | Reason                                                                                                                                                                                                                            |
+| ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/context.ts`        | Replaced entirely by `src/context/main.ts` + four sibling files.                                                                                                                                                                  |
 | `tests/context.spec.ts` | Replaced by the four-file `tests/context/` split. Existing `XrpcResponse` chainable-setter tests migrate into `tests/context/http.spec.ts`; existing `XrpcStream` helper tests migrate into `tests/context/subscription.spec.ts`. |
 
 **Post-merge cleanup (not an executable task, surfaced for awareness):**
@@ -59,7 +59,7 @@
 ## Notes on conventions
 
 - **File extensions in imports:** This repo uses `.ts` import specifiers internally and relies on the build pipeline (`tsdown`) to rewrite to `.js`. The exception is `index.ts` and configure-related re-exports which use `.js` because they're the published surface. Follow the existing pattern in each file you modify — match what's already there.
-- **Commit messages:** [Scoped Commits](https://scopedcommits.com/) format — `<scope>: <description>`, optional body, optional trailers. No type prefix (`feat:` / `refactor:` / `chore:`). Use lowercase scope; the description can be either case but match the spec's terse style. The scope identifies the *subsystem* changed, not the *kind* of change — the kind reads off the description prose. Typical scopes for this plan: `context`, `executor`, `provider`, `factory`, `tests/context`, `tests`. Multiple scopes can be comma-separated; nested scopes are OK (`tests/context: helpers: ...`). For project-wide changes, an umbrella scope like `global` or `all` is acceptable.
+- **Commit messages:** [Scoped Commits](https://scopedcommits.com/) format — `<scope>: <description>`, optional body, optional trailers. No type prefix (`feat:` / `refactor:` / `chore:`). Use lowercase scope; the description can be either case but match the spec's terse style. The scope identifies the _subsystem_ changed, not the _kind_ of change — the kind reads off the description prose. Typical scopes for this plan: `context`, `executor`, `provider`, `factory`, `tests/context`, `tests`. Multiple scopes can be comma-separated; nested scopes are OK (`tests/context: helpers: ...`). For project-wide changes, an umbrella scope like `global` or `all` is acceptable.
 - **No `--no-gpg-sign` exception for plan 05.** Plan 04's CLAUDE.md exception is scoped to plans 01–04. Plan 05 commits sign normally; Emelia will Touch ID each commit. If the signing prompts become a workflow blocker during execution, surface that to Emelia rather than silently bypassing.
 - **Test runner:** `pnpm quick:test --files <glob>` runs a single file. `pnpm test` runs the full pipeline (lint + typecheck + tests).
 - **Lint and typecheck:** `pnpm lint` (which itself runs `typecheck`) and `pnpm typecheck` standalone. `pretest` runs `pnpm lint` automatically so `pnpm test` is the safety net.
@@ -69,6 +69,7 @@
 ## Task 1: Scaffold `XrpcOperationContext` abstract base
 
 **Files:**
+
 - Create: `src/context/operation.ts`
 - Create: `tests/context/operation.spec.ts`
 
@@ -164,10 +165,7 @@ test.group('XrpcOperationContext — static surface', () => {
   })
 
   test('getOrFail() throws outside any als.run scope', ({ assert }) => {
-    assert.throws(
-      () => XrpcOperationContext.getOrFail(),
-      /XrpcOperationContext is not available/
-    )
+    assert.throws(() => XrpcOperationContext.getOrFail(), /XrpcOperationContext is not available/)
   })
 
   test('exposes static .macro from Macroable', ({ assert }) => {
@@ -204,6 +202,7 @@ git commit -m "context: scaffold XrpcOperationContext abstract base"
 ## Task 2: Add `XrpcHttpContext` subclass
 
 **Files:**
+
 - Create: `src/context/http.ts`
 - Create: `tests/context/http.spec.ts`
 
@@ -229,8 +228,9 @@ import type {
  * lexicon, params, and input — the L-parameterized fields that distinguish
  * an HTTP operation context from the abstract base.
  */
-export interface XrpcHttpContextParams<L extends XrpcQueryLexicon | XrpcProcedureLexicon>
-  extends XrpcOperationContextParams {
+export interface XrpcHttpContextParams<
+  L extends XrpcQueryLexicon | XrpcProcedureLexicon,
+> extends XrpcOperationContextParams {
   lexicon: L
   params: InferParams<L>
   input: InferInput<L>
@@ -269,9 +269,7 @@ export class XrpcHttpContext<
       | XrpcProcedureLexicon,
   >(): XrpcHttpContext<ResolveLexicon<T>> | undefined {
     const ctx = XrpcOperationContext.als.getStore()
-    return ctx instanceof XrpcHttpContext
-      ? (ctx as XrpcHttpContext<ResolveLexicon<T>>)
-      : undefined
+    return ctx instanceof XrpcHttpContext ? (ctx as XrpcHttpContext<ResolveLexicon<T>>) : undefined
   }
 
   static getOrFail<
@@ -485,6 +483,7 @@ git commit -m "context: add XrpcHttpContext subclass for query + procedure"
 ## Task 3: Add `XrpcSubscriptionContext` subclass
 
 **Files:**
+
 - Create: `src/context/subscription.ts`
 - Create: `tests/context/subscription.spec.ts`
 
@@ -508,8 +507,9 @@ import type {
  * params with lexicon and params; XrpcStream is constructed from the
  * lexicon + signal inside the subclass constructor.
  */
-export interface XrpcSubscriptionContextParams<L extends XrpcSubscriptionLexicon>
-  extends XrpcOperationContextParams {
+export interface XrpcSubscriptionContextParams<
+  L extends XrpcSubscriptionLexicon,
+> extends XrpcOperationContextParams {
   lexicon: L
   params: InferParams<L>
 }
@@ -533,9 +533,9 @@ export class XrpcSubscriptionContext<
    * takes for registration. Caller-assertion semantics for L (same trade-
    * off as XrpcHttpContext.get / getOrFail — see those doc comments).
    */
-  static get<
-    T extends LexiconInput<XrpcSubscriptionLexicon> = XrpcSubscriptionLexicon,
-  >(): XrpcSubscriptionContext<ResolveLexicon<T>> | undefined {
+  static get<T extends LexiconInput<XrpcSubscriptionLexicon> = XrpcSubscriptionLexicon>():
+    | XrpcSubscriptionContext<ResolveLexicon<T>>
+    | undefined {
     const ctx = XrpcOperationContext.als.getStore()
     return ctx instanceof XrpcSubscriptionContext
       ? (ctx as XrpcSubscriptionContext<ResolveLexicon<T>>)
@@ -579,7 +579,9 @@ import { XrpcStream } from '../../src/stream.ts'
 
 const subscriptionLex = { nsid: 'com.example.test.sub', type: 'xrpc_subscription' } as any
 
-function makeSubscriptionContext(overrides: { lexicon?: any; params?: any; signal?: AbortSignal } = {}) {
+function makeSubscriptionContext(
+  overrides: { lexicon?: any; params?: any; signal?: AbortSignal } = {}
+) {
   const httpCtx = new HttpContextFactory().create()
   const lexicon = overrides.lexicon ?? subscriptionLex
   return new XrpcSubscriptionContext({
@@ -654,9 +656,7 @@ test.group('XrpcSubscriptionContext — stream helpers', () => {
     assert.isTrue(ctx.stream.aborted)
   })
 
-  test('stream.message() returns a payload with $type derived from NSID + ref', ({
-    assert,
-  }) => {
+  test('stream.message() returns a payload with $type derived from NSID + ref', ({ assert }) => {
     const ctx = makeSubscriptionContext()
     const msg = (ctx.stream as any).message('#labels', { seq: 1 })
     assert.deepEqual(msg, { $type: 'com.example.test.sub#labels', seq: 1 })
@@ -698,6 +698,7 @@ git commit -m "context: add XrpcSubscriptionContext subclass"
 ## Task 4: Add predicate helpers + `main.ts` re-exports + `XrpcContext<L>` type alias
 
 **Files:**
+
 - Create: `src/context/helpers.ts`
 - Create: `src/context/main.ts`
 - Create: `tests/context/helpers.spec.ts`
@@ -755,10 +756,7 @@ import type { XrpcSubscriptionContext } from './subscription.ts'
 
 export { XrpcOperationContext, type XrpcOperationContextParams } from './operation.ts'
 export { XrpcHttpContext, type XrpcHttpContextParams } from './http.ts'
-export {
-  XrpcSubscriptionContext,
-  type XrpcSubscriptionContextParams,
-} from './subscription.ts'
+export { XrpcSubscriptionContext, type XrpcSubscriptionContextParams } from './subscription.ts'
 export { isHttpContext, isSubscriptionContext } from './helpers.ts'
 
 /**
@@ -902,6 +900,7 @@ git commit -m "context: add predicate helpers + main.ts public surface"
 ## Task 5: Update executor to construct new subclasses
 
 **Files:**
+
 - Modify: `src/executor.ts`
 
 The executor's existing branch on `route.lexicon.type === 'xrpc_subscription'` now also chooses the subclass. Both branches use the shared `XrpcOperationContext.als` — same storage, different class identity. The internal helpers (`wrapSubscriptionIterator`, `runConsumerHandler`) update their parameter types to match.
@@ -920,21 +919,13 @@ Replace the existing file with the version below. The diff from current state:
 
 ```ts
 import { XRPCSubscriptionError } from '@atcute/xrpc-server'
-import {
-  XrpcHttpContext,
-  XrpcOperationContext,
-  XrpcSubscriptionContext,
-} from './context/main.ts'
+import { XrpcHttpContext, XrpcOperationContext, XrpcSubscriptionContext } from './context/main.ts'
 import { InternalServerError, NotFoundError, XrpcError } from './errors.ts'
 import { type RouteInfo } from './router/types.ts'
 import { type XrpcSerializer } from './serializer.ts'
 import { type XrpcService, REPORTED } from './xrpc_service.ts'
 import { type RequestContext } from './request_context.ts'
-import type {
-  XrpcLexicon,
-  XrpcProcedureLexicon,
-  XrpcQueryLexicon,
-} from './types.ts'
+import type { XrpcLexicon, XrpcProcedureLexicon, XrpcQueryLexicon } from './types.ts'
 
 export type SharedXrpcExecutor = (
   atcuteCtx: any,
@@ -1120,6 +1111,7 @@ git commit -m "executor: construct XrpcHttpContext / XrpcSubscriptionContext per
 ## Task 6: Update provider + exception_handler + index re-exports
 
 **Files:**
+
 - Modify: `providers/provider.ts`
 - Modify: `src/exception_handler.ts`
 - Modify: `index.ts`
@@ -1224,11 +1216,13 @@ export {
 Update `tsdown.entry` in `package.json` — it lists each file individually (mirroring the `src/router/` entries) and currently includes `./src/context.ts`. Replace that single entry with the five new files in the same alphabetical / topical position:
 
 Before:
+
 ```json
 "./src/context.ts",
 ```
 
 After:
+
 ```json
 "./src/context/operation.ts",
 "./src/context/http.ts",
@@ -1267,6 +1261,7 @@ git commit -m "provider, exception_handler, index: migrate to new context module
 ## Task 7: Update `factories/xrpc.ts` with overloaded `create()`
 
 **Files:**
+
 - Modify: `factories/xrpc.ts`
 
 The factory's `create()` becomes overloaded — three signatures (per-kind narrowed + wide fallback) plus the implementation. Runtime branches on `lexicon.type` to construct the right subclass; the wide-union narrowing on `XrpcLexicon` lets the implementation body use TypeScript's natural discriminated-union flow analysis without an `as L` cast on the lexicon.
@@ -1278,11 +1273,7 @@ import { HttpContextFactory } from '@adonisjs/core/factories/http'
 import type { HttpRequest } from '@adonisjs/core/http'
 import type { Logger } from '@adonisjs/core/logger'
 import type { ContainerResolver } from '@adonisjs/core/container'
-import {
-  XrpcHttpContext,
-  XrpcSubscriptionContext,
-  type XrpcContext,
-} from '../src/context/main.js'
+import { XrpcHttpContext, XrpcSubscriptionContext, type XrpcContext } from '../src/context/main.js'
 import type {
   InferInput,
   InferParams,
@@ -1337,9 +1328,7 @@ export class XrpcContextFactory {
     // confined to the return cast.
     const lexicon = this.#params.lexicon
     if (!lexicon) {
-      throw new Error(
-        'XrpcContextFactory: lexicon is required — call .merge({ lexicon }) first'
-      )
+      throw new Error('XrpcContextFactory: lexicon is required — call .merge({ lexicon }) first')
     }
 
     const httpCtx = new HttpContextFactory().create()
@@ -1364,9 +1353,7 @@ export class XrpcContextFactory {
     return new XrpcHttpContext({
       ...shared,
       lexicon,
-      params: (this.#params.params ?? {}) as InferParams<
-        XrpcQueryLexicon | XrpcProcedureLexicon
-      >,
+      params: (this.#params.params ?? {}) as InferParams<XrpcQueryLexicon | XrpcProcedureLexicon>,
       input: this.#params.input as InferInput<XrpcQueryLexicon | XrpcProcedureLexicon>,
     }) as XrpcContext<L>
   }
@@ -1401,6 +1388,7 @@ git commit -m "factory: overload XrpcContextFactory.create per lexicon kind"
 ## Task 8: Migrate `tests/context.spec.ts` content into per-class spec files
 
 **Files:**
+
 - Delete: `tests/context.spec.ts`
 
 The content of the old `tests/context.spec.ts` has been split into `tests/context/{operation,http,subscription,helpers}.spec.ts` across Tasks 1–4. At this point, the old file's tests are either:
@@ -1418,15 +1406,15 @@ pnpm quick:test --files 'tests/context/*.spec.ts'
 
 Expected: all 4 files pass. Compare to the original `tests/context.spec.ts` test names to confirm every assertion has a corresponding test in the new files. Specifically check:
 
-| Original test name | Migrated to |
-|---|---|
-| `exposes the materialized primitives directly` | `tests/context/http.spec.ts` AND `tests/context/subscription.spec.ts` (one per subclass) |
-| `procedure-kind context exposes response as XrpcResponse` | `tests/context/http.spec.ts` (`exposes response as XrpcResponse instance`) |
-| `subscription-kind context exposes response as XrpcStream` | `tests/context/subscription.spec.ts` (`exposes stream as XrpcStream instance`) |
-| `XrpcContext.get / .getOrFail — ALS` (4 tests) | `tests/context/http.spec.ts` + `tests/context/subscription.spec.ts` (per-subclass) + `tests/context/operation.spec.ts` (base) |
-| `XrpcResponse — chainable setters` (5 tests) | `tests/context/http.spec.ts` (`XrpcHttpContext — response state` group) |
-| `XrpcStream — subscription helpers` (2 tests) | `tests/context/subscription.spec.ts` (`XrpcSubscriptionContext — stream helpers` group) |
-| `Macroable extension points` | Split across the three per-class specs (each verifies its class's `.macro` field) |
+| Original test name                                         | Migrated to                                                                                                                   |
+| ---------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `exposes the materialized primitives directly`             | `tests/context/http.spec.ts` AND `tests/context/subscription.spec.ts` (one per subclass)                                      |
+| `procedure-kind context exposes response as XrpcResponse`  | `tests/context/http.spec.ts` (`exposes response as XrpcResponse instance`)                                                    |
+| `subscription-kind context exposes response as XrpcStream` | `tests/context/subscription.spec.ts` (`exposes stream as XrpcStream instance`)                                                |
+| `XrpcContext.get / .getOrFail — ALS` (4 tests)             | `tests/context/http.spec.ts` + `tests/context/subscription.spec.ts` (per-subclass) + `tests/context/operation.spec.ts` (base) |
+| `XrpcResponse — chainable setters` (5 tests)               | `tests/context/http.spec.ts` (`XrpcHttpContext — response state` group)                                                       |
+| `XrpcStream — subscription helpers` (2 tests)              | `tests/context/subscription.spec.ts` (`XrpcSubscriptionContext — stream helpers` group)                                       |
+| `Macroable extension points`                               | Split across the three per-class specs (each verifies its class's `.macro` field)                                             |
 
 If any test is missing, add it to the appropriate per-class spec before deleting the old file.
 
@@ -1458,6 +1446,7 @@ git commit -m "tests/context: migrate context.spec.ts into per-class spec files"
 ## Task 9: Update remaining test files
 
 **Files:**
+
 - Modify: `tests/provider_error_reporting.spec.ts`
 - Modify: `tests/xrpc_server.spec.ts`
 - Modify: `tests/factory.spec.ts`
@@ -1469,12 +1458,14 @@ These tests reference the old `XrpcContext` symbol or its ALS in ways that need 
 Replace the imports (lines 17–18 region):
 
 Before:
+
 ```ts
 import type { XrpcContext } from '../src/context.js'
 import type { XrpcLexicon } from '../src/types.js'
 ```
 
 After:
+
 ```ts
 import type { XrpcOperationContext } from '../src/context/main.js'
 ```
@@ -1510,11 +1501,13 @@ Expected output after edit: empty (no matches).
 Replace the import (line 12):
 
 Before:
+
 ```ts
 import { XrpcContext } from '../src/context.js'
 ```
 
 After:
+
 ```ts
 import { XrpcSubscriptionContext } from '../src/context/main.js'
 ```
@@ -1522,6 +1515,7 @@ import { XrpcSubscriptionContext } from '../src/context/main.js'
 The single usage at line 297 is inside a subscription-path test (`'XrpcContext.als is in scope during each yielded value (per-.next() ALS re-entry)'`). Update to use the subclass accessor — the runtime context in scope is a subscription context, so `XrpcSubscriptionContext.get()` is the right shape and gives typed `.lexicon` access without the `as any` cast:
 
 Before (around lines 288–300):
+
 ```ts
 test('XrpcContext.als is in scope during each yielded value (per-.next() ALS re-entry)', async ({
   assert,
@@ -1537,6 +1531,7 @@ test('XrpcContext.als is in scope during each yielded value (per-.next() ALS re-
 ```
 
 After:
+
 ```ts
 test('XrpcOperationContext.als is in scope during each yielded value (per-.next() ALS re-entry)', async ({
   assert,
@@ -1558,6 +1553,7 @@ The test name also updates from "`XrpcContext.als`" to "`XrpcOperationContext.al
 Replace the imports (lines 1–5):
 
 Before:
+
 ```ts
 import { test } from '@japa/runner'
 import { XrpcContextFactory } from '../factories/xrpc.js'
@@ -1567,6 +1563,7 @@ import { XrpcStream } from '../src/stream.js'
 ```
 
 After:
+
 ```ts
 import { test } from '@japa/runner'
 import { XrpcContextFactory } from '../factories/xrpc.js'
@@ -1580,6 +1577,7 @@ Then update the assertions that depended on the old single `XrpcContext` class. 
 **Test 1: "creates an XrpcContext with defaults for procedure-kind lexicons"** (line 15)
 
 Before:
+
 ```ts
 test('creates an XrpcContext with defaults for procedure-kind lexicons', ({ assert }) => {
   const ctx = new XrpcContextFactory().merge({ lexicon: procedureLex }).create()
@@ -1591,6 +1589,7 @@ test('creates an XrpcContext with defaults for procedure-kind lexicons', ({ asse
 ```
 
 After:
+
 ```ts
 test('creates an XrpcHttpContext with defaults for procedure-kind lexicons', ({ assert }) => {
   const ctx = new XrpcContextFactory().merge({ lexicon: procedureLex }).create()
@@ -1604,6 +1603,7 @@ test('creates an XrpcHttpContext with defaults for procedure-kind lexicons', ({ 
 **Test 2: "creates an XrpcContext with defaults for subscription-kind lexicons"** (line 23)
 
 Before:
+
 ```ts
 test('creates an XrpcContext with defaults for subscription-kind lexicons', ({ assert }) => {
   const ctx = new XrpcContextFactory().merge({ lexicon: subscriptionLex }).create()
@@ -1612,6 +1612,7 @@ test('creates an XrpcContext with defaults for subscription-kind lexicons', ({ a
 ```
 
 After:
+
 ```ts
 test('creates an XrpcSubscriptionContext with defaults for subscription-kind lexicons', ({
   assert,
@@ -1646,6 +1647,7 @@ git commit -m "tests: update remaining test files for new context module"
 ## Task 10: Delete `src/context.ts`
 
 **Files:**
+
 - Delete: `src/context.ts`
 
 All callers now import from `src/context/main.ts`. The old single-file module is dead code.

@@ -123,20 +123,18 @@ export class XrpcHttpContext<
   // don't care about lexicon precision omit the type argument and get the
   // default wide-L context.
   static get<
-    T extends LexiconInput<
-      XrpcQueryLexicon | XrpcProcedureLexicon
-    > = XrpcQueryLexicon | XrpcProcedureLexicon,
+    T extends LexiconInput<XrpcQueryLexicon | XrpcProcedureLexicon> =
+      | XrpcQueryLexicon
+      | XrpcProcedureLexicon,
   >(): XrpcHttpContext<ResolveLexicon<T>> | undefined {
     const ctx = XrpcOperationContext.als.getStore()
-    return ctx instanceof XrpcHttpContext
-      ? (ctx as XrpcHttpContext<ResolveLexicon<T>>)
-      : undefined
+    return ctx instanceof XrpcHttpContext ? (ctx as XrpcHttpContext<ResolveLexicon<T>>) : undefined
   }
 
   static getOrFail<
-    T extends LexiconInput<
-      XrpcQueryLexicon | XrpcProcedureLexicon
-    > = XrpcQueryLexicon | XrpcProcedureLexicon,
+    T extends LexiconInput<XrpcQueryLexicon | XrpcProcedureLexicon> =
+      | XrpcQueryLexicon
+      | XrpcProcedureLexicon,
   >(): XrpcHttpContext<ResolveLexicon<T>> {
     const ctx = XrpcHttpContext.get<T>()
     if (!ctx) {
@@ -172,9 +170,9 @@ export class XrpcSubscriptionContext<
 > extends XrpcOperationContext {
   // Same LexiconInput<L> + ResolveLexicon<T> pattern as XrpcHttpContext —
   // see comments there for the runtime-verification trade-off on T.
-  static get<
-    T extends LexiconInput<XrpcSubscriptionLexicon> = XrpcSubscriptionLexicon,
-  >(): XrpcSubscriptionContext<ResolveLexicon<T>> | undefined {
+  static get<T extends LexiconInput<XrpcSubscriptionLexicon> = XrpcSubscriptionLexicon>():
+    | XrpcSubscriptionContext<ResolveLexicon<T>>
+    | undefined {
     const ctx = XrpcOperationContext.als.getStore()
     return ctx instanceof XrpcSubscriptionContext
       ? (ctx as XrpcSubscriptionContext<ResolveLexicon<T>>)
@@ -225,12 +223,11 @@ export { isHttpContext, isSubscriptionContext } from './helpers.js'
 // XrpcHttpContext<XrpcProcedureLexicon> | XrpcSubscriptionContext<XrpcSubscriptionLexicon>`
 // — i.e. the full discriminated union. Use this form in signatures that
 // accept any kind of context.
-export type XrpcContext<L extends XrpcLexicon> =
-  L extends XrpcSubscriptionLexicon
-    ? XrpcSubscriptionContext<L>
-    : L extends XrpcQueryLexicon | XrpcProcedureLexicon
-      ? XrpcHttpContext<L>
-      : never
+export type XrpcContext<L extends XrpcLexicon> = L extends XrpcSubscriptionLexicon
+  ? XrpcSubscriptionContext<L>
+  : L extends XrpcQueryLexicon | XrpcProcedureLexicon
+    ? XrpcHttpContext<L>
+    : never
 ```
 
 ### Predicate helpers
@@ -296,8 +293,9 @@ interface XrpcOperationContextParams {
 
 // HTTP — adds lexicon, params, and input. `input` is typed `InferInput<L>`,
 // which is `undefined` for queries and the body for procedures.
-interface XrpcHttpContextParams<L extends XrpcQueryLexicon | XrpcProcedureLexicon>
-  extends XrpcOperationContextParams {
+interface XrpcHttpContextParams<
+  L extends XrpcQueryLexicon | XrpcProcedureLexicon,
+> extends XrpcOperationContextParams {
   lexicon: L
   params: InferParams<L>
   input: InferInput<L>
@@ -306,8 +304,9 @@ interface XrpcHttpContextParams<L extends XrpcQueryLexicon | XrpcProcedureLexico
 // Subscription — adds lexicon and params. XrpcStream is constructed from the
 // lexicon and signal inside the subclass constructor; no separate `stream`
 // param needed.
-interface XrpcSubscriptionContextParams<L extends XrpcSubscriptionLexicon>
-  extends XrpcOperationContextParams {
+interface XrpcSubscriptionContextParams<
+  L extends XrpcSubscriptionLexicon,
+> extends XrpcOperationContextParams {
   lexicon: L
   params: InferParams<L>
 }
@@ -317,13 +316,13 @@ The existing `XrpcContextParams<L>` interface is removed. Callers update to the 
 
 ### ALS access patterns
 
-| Use case | Call | Returns |
-|---|---|---|
-| Context-agnostic read (logger, containerResolver, requestId) — typically infrastructure code that doesn't care which kind of handler scope it's in | `XrpcOperationContext.getOrFail()` | `XrpcOperationContext` (non-generic); cross-cutting fields directly typed. For lexicon-typed reads, narrow with `isHttpContext` / `isSubscriptionContext` from `src/context/helpers.ts`. |
-| HTTP-handler-side service code that needs `ctx.response` (no lexicon precision needed) | `XrpcHttpContext.getOrFail()` | `XrpcHttpContext` with default wide L; throws if currently in a subscription scope |
-| HTTP-handler-side code that wants lexicon-typed access | `XrpcHttpContext.getOrFail<typeof MyProc>()` (namespace) or `XrpcHttpContext.getOrFail<typeof MyProc.mainSchema>()` (bare) | `XrpcHttpContext<<bare schema type>>` — `.lexicon`, `.params`, `.input` typed precisely against the resolved bare schema. The assertion is NOT runtime-verified against the actual scope's lexicon; `instanceof` only verifies HTTP-kind. |
-| Subscription-handler-side service code that needs `ctx.stream` (no lexicon precision needed) | `XrpcSubscriptionContext.getOrFail()` | `XrpcSubscriptionContext` with default wide L; throws if currently in an HTTP scope |
-| Subscription-handler-side code that wants lexicon-typed access | `XrpcSubscriptionContext.getOrFail<typeof MySub>()` (namespace) or `XrpcSubscriptionContext.getOrFail<typeof MySub.mainSchema>()` (bare) | `XrpcSubscriptionContext<<bare schema type>>` — `.lexicon`, `.params`, `.stream` typed precisely. Same caller-assertion semantics as the HTTP variant. |
+| Use case                                                                                                                                           | Call                                                                                                                                     | Returns                                                                                                                                                                                                                                   |
+| -------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Context-agnostic read (logger, containerResolver, requestId) — typically infrastructure code that doesn't care which kind of handler scope it's in | `XrpcOperationContext.getOrFail()`                                                                                                       | `XrpcOperationContext` (non-generic); cross-cutting fields directly typed. For lexicon-typed reads, narrow with `isHttpContext` / `isSubscriptionContext` from `src/context/helpers.ts`.                                                  |
+| HTTP-handler-side service code that needs `ctx.response` (no lexicon precision needed)                                                             | `XrpcHttpContext.getOrFail()`                                                                                                            | `XrpcHttpContext` with default wide L; throws if currently in a subscription scope                                                                                                                                                        |
+| HTTP-handler-side code that wants lexicon-typed access                                                                                             | `XrpcHttpContext.getOrFail<typeof MyProc>()` (namespace) or `XrpcHttpContext.getOrFail<typeof MyProc.mainSchema>()` (bare)               | `XrpcHttpContext<<bare schema type>>` — `.lexicon`, `.params`, `.input` typed precisely against the resolved bare schema. The assertion is NOT runtime-verified against the actual scope's lexicon; `instanceof` only verifies HTTP-kind. |
+| Subscription-handler-side service code that needs `ctx.stream` (no lexicon precision needed)                                                       | `XrpcSubscriptionContext.getOrFail()`                                                                                                    | `XrpcSubscriptionContext` with default wide L; throws if currently in an HTTP scope                                                                                                                                                       |
+| Subscription-handler-side code that wants lexicon-typed access                                                                                     | `XrpcSubscriptionContext.getOrFail<typeof MySub>()` (namespace) or `XrpcSubscriptionContext.getOrFail<typeof MySub.mainSchema>()` (bare) | `XrpcSubscriptionContext<<bare schema type>>` — `.lexicon`, `.params`, `.stream` typed precisely. Same caller-assertion semantics as the HTTP variant.                                                                                    |
 
 The throw on wrong-kind access is intentional: a service that calls `XrpcHttpContext.getOrFail()` from a subscription scope is incorrectly composed, and a loud failure beats a silent `undefined`.
 
@@ -371,7 +370,9 @@ const xrpcCtx = new XrpcHttpContext({
   params: atcuteCtx.params,
   signal: atcuteCtx.signal,
 })
-return XrpcOperationContext.als.run(xrpcCtx, async () => { /* same body as today */ })
+return XrpcOperationContext.als.run(xrpcCtx, async () => {
+  /* same body as today */
+})
 ```
 
 `wrapSubscriptionIterator` updates its parameter type from `XrpcContext<XrpcLexicon>` to `XrpcSubscriptionContext`, and the inner `.next()` ALS re-entry uses `XrpcOperationContext.als.run(...)` (the shared base ALS — same instance, just a different exporting class). `runConsumerHandler` updates its parameter type to `XrpcOperationContext` (non-generic — it only reads shared fields like `logger`).
@@ -380,17 +381,17 @@ return XrpcOperationContext.als.run(xrpcCtx, async () => { /* same body as today
 
 ### Callers to update
 
-| File | Change |
-|---|---|
-| `src/executor.ts` | Branch on lexicon kind picks subclass; `XrpcContext.als` → `XrpcOperationContext.als`. |
-| `src/exception_handler.ts` | Type-only import — `XrpcContext` → `XrpcOperationContext` (non-generic) for the union case, or the concrete subclass for kind-specific reporters. |
-| `providers/provider.ts:208,255` | `XrpcContext.get() ?? null` → `XrpcOperationContext.get() ?? null`. (Reports run against either kind; the union is correct.) |
-| `index.ts:15` | `export { XrpcContext } from './src/context.js'` → re-export the three concrete classes + the `XrpcContext` type alias from `./src/context/main.js`. |
-| `factories/xrpc.ts` (`XrpcContextFactory`) | `create()` becomes an overloaded method that narrows its return type based on the inferred lexicon kind — see [Factory narrowing](#factory-narrowing) below. Runtime branches on `lexicon.type` to construct the right subclass. |
-| `tests/context.spec.ts` | Reorganize: split into `tests/context/operation.spec.ts`, `tests/context/http.spec.ts`, `tests/context/subscription.spec.ts`. The ALS / Macroable tests move to the operation spec; the response-state tests move to http; the stream tests move to subscription. The cast workaround in the construction helper goes away. |
-| `tests/xrpc_server.spec.ts:288,297` | `XrpcContext.als.getStore()` → `XrpcOperationContext.als.getStore()`. (The test is about ALS scope re-entry inside subscription iteration; it doesn't care about narrowing.) |
-| `tests/provider_error_reporting.spec.ts:36,40` | `XrpcContext<XrpcLexicon> \| null` → `XrpcOperationContext \| null` (non-generic) in the reporter signature. |
-| `tests/factory.spec.ts:3` | `XrpcContext` type ref updates to whichever concrete class the factory returns. |
+| File                                           | Change                                                                                                                                                                                                                                                                                                                      |
+| ---------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/executor.ts`                              | Branch on lexicon kind picks subclass; `XrpcContext.als` → `XrpcOperationContext.als`.                                                                                                                                                                                                                                      |
+| `src/exception_handler.ts`                     | Type-only import — `XrpcContext` → `XrpcOperationContext` (non-generic) for the union case, or the concrete subclass for kind-specific reporters.                                                                                                                                                                           |
+| `providers/provider.ts:208,255`                | `XrpcContext.get() ?? null` → `XrpcOperationContext.get() ?? null`. (Reports run against either kind; the union is correct.)                                                                                                                                                                                                |
+| `index.ts:15`                                  | `export { XrpcContext } from './src/context.js'` → re-export the three concrete classes + the `XrpcContext` type alias from `./src/context/main.js`.                                                                                                                                                                        |
+| `factories/xrpc.ts` (`XrpcContextFactory`)     | `create()` becomes an overloaded method that narrows its return type based on the inferred lexicon kind — see [Factory narrowing](#factory-narrowing) below. Runtime branches on `lexicon.type` to construct the right subclass.                                                                                            |
+| `tests/context.spec.ts`                        | Reorganize: split into `tests/context/operation.spec.ts`, `tests/context/http.spec.ts`, `tests/context/subscription.spec.ts`. The ALS / Macroable tests move to the operation spec; the response-state tests move to http; the stream tests move to subscription. The cast workaround in the construction helper goes away. |
+| `tests/xrpc_server.spec.ts:288,297`            | `XrpcContext.als.getStore()` → `XrpcOperationContext.als.getStore()`. (The test is about ALS scope re-entry inside subscription iteration; it doesn't care about narrowing.)                                                                                                                                                |
+| `tests/provider_error_reporting.spec.ts:36,40` | `XrpcContext<XrpcLexicon> \| null` → `XrpcOperationContext \| null` (non-generic) in the reporter signature.                                                                                                                                                                                                                |
+| `tests/factory.spec.ts:3`                      | `XrpcContext` type ref updates to whichever concrete class the factory returns.                                                                                                                                                                                                                                             |
 
 ### Factory narrowing
 
@@ -400,7 +401,7 @@ return XrpcOperationContext.als.run(xrpcCtx, async () => { /* same body as today
 create<L extends XrpcLexicon>(): XrpcContext<L>
 ```
 
-That signature relies on the consumer asserting `L` at the call site (`factory.create<typeof myProcedureLex>()`). With the union-alias `XrpcContext<L>`, this *does* resolve to the concrete subclass when `L` is concrete — but TypeScript can't propagate the runtime `lexicon.type` check back to `L` inside the body, so the construction site needs a cast no matter what.
+That signature relies on the consumer asserting `L` at the call site (`factory.create<typeof myProcedureLex>()`). With the union-alias `XrpcContext<L>`, this _does_ resolve to the concrete subclass when `L` is concrete — but TypeScript can't propagate the runtime `lexicon.type` check back to `L` inside the body, so the construction site needs a cast no matter what.
 
 The right shape is overload signatures — one per lexicon-kind constraint, plus a wide implementation signature. TypeScript picks the most specific overload based on the inferred `L`, so callers get the narrowed concrete type without a cast on their side:
 

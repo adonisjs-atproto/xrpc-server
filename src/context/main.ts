@@ -9,10 +9,7 @@ import type { XrpcSubscriptionContext } from './subscription.ts'
 
 export { XrpcOperationContext, type XrpcOperationContextParams } from './operation.ts'
 export { XrpcHttpContext, type XrpcHttpContextParams } from './http.ts'
-export {
-  XrpcSubscriptionContext,
-  type XrpcSubscriptionContextParams,
-} from './subscription.ts'
+export { XrpcSubscriptionContext, type XrpcSubscriptionContextParams } from './subscription.ts'
 export { isHttpContext, isSubscriptionContext } from './helpers.ts'
 
 /**

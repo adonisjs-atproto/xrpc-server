@@ -8,7 +8,7 @@ the TypeScript compiler silently:
 
 ```ts
 router.xrpc.query(ComAtprotoLabelQueryLabels, async (ctx) => {
-  return {}  // ← no error, even though `labels` is required
+  return {} // ← no error, even though `labels` is required
 })
 ```
 
@@ -51,8 +51,7 @@ Narrow the inline function form of `XrpcHandlerInput` to return
 
 ```ts
 // Rough sketch — not yet implemented
-type XrpcHandlerFn<L extends XrpcLexicon> =
-  (ctx: XrpcContext<L>) => Promise<InferOutput<L> | void>
+type XrpcHandlerFn<L extends XrpcLexicon> = (ctx: XrpcContext<L>) => Promise<InferOutput<L> | void>
 ```
 
 `void` covers the `ctx.response.json()` path (handler returns nothing; executor

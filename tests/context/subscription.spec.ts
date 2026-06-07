@@ -83,9 +83,7 @@ test.group('XrpcSubscriptionContext — stream helpers', () => {
     assert.isTrue(ctx.stream.aborted)
   })
 
-  test('stream.message() returns a payload with $type derived from NSID + ref', ({
-    assert,
-  }) => {
+  test('stream.message() returns a payload with $type derived from NSID + ref', ({ assert }) => {
     const ctx = makeSubscriptionContext()
     const msg = (ctx.stream as any).message('#labels', { seq: 1 })
     assert.deepEqual(msg, { $type: 'com.example.test.sub#labels', seq: 1 })

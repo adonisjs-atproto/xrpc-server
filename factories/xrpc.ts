@@ -2,11 +2,7 @@ import { HttpContextFactory } from '@adonisjs/core/factories/http'
 import type { HttpRequest } from '@adonisjs/core/http'
 import type { Logger } from '@adonisjs/core/logger'
 import type { ContainerResolver } from '@adonisjs/core/container'
-import {
-  XrpcHttpContext,
-  XrpcSubscriptionContext,
-  type XrpcContext,
-} from '../src/context/main.js'
+import { XrpcHttpContext, XrpcSubscriptionContext, type XrpcContext } from '../src/context/main.js'
 import type {
   InferInput,
   InferParams,
@@ -61,9 +57,7 @@ export class XrpcContextFactory {
     // confined to the return cast.
     const lexicon = this.#params.lexicon
     if (!lexicon) {
-      throw new Error(
-        'XrpcContextFactory: lexicon is required — call .merge({ lexicon }) first'
-      )
+      throw new Error('XrpcContextFactory: lexicon is required — call .merge({ lexicon }) first')
     }
 
     const httpCtx = new HttpContextFactory().create()

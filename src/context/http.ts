@@ -15,8 +15,9 @@ import type {
  * lexicon, params, and input — the L-parameterized fields that distinguish
  * an HTTP operation context from the abstract base.
  */
-export interface XrpcHttpContextParams<L extends XrpcQueryLexicon | XrpcProcedureLexicon>
-  extends XrpcOperationContextParams {
+export interface XrpcHttpContextParams<
+  L extends XrpcQueryLexicon | XrpcProcedureLexicon,
+> extends XrpcOperationContextParams {
   lexicon: L
   params: InferParams<L>
   input: InferInput<L>
@@ -55,9 +56,7 @@ export class XrpcHttpContext<
       | XrpcProcedureLexicon,
   >(): XrpcHttpContext<ResolveLexicon<T>> | undefined {
     const ctx = XrpcOperationContext.als.getStore()
-    return ctx instanceof XrpcHttpContext
-      ? (ctx as XrpcHttpContext<ResolveLexicon<T>>)
-      : undefined
+    return ctx instanceof XrpcHttpContext ? (ctx as XrpcHttpContext<ResolveLexicon<T>>) : undefined
   }
 
   static getOrFail<

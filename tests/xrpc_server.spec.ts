@@ -9,7 +9,7 @@ import {
   type RequestContext,
 } from '../src/request_context.js'
 import { XrpcSerializer } from '../src/serializer.js'
-import { XrpcContext } from '../src/context.js'
+import { XrpcSubscriptionContext } from '../src/context/main.js'
 import { InvalidRequestError, InternalServerError } from '../src/errors.js'
 import { XrpcRouter, type RouteInfo } from '../src/router/main.ts'
 import { XrpcService, REPORTED } from '../src/xrpc_service.js'
@@ -285,7 +285,7 @@ test.group('createXrpcExecutor — subscription path', (group) => {
     assert.equal(collected[2].n, 3)
   })
 
-  test('XrpcContext.als is in scope during each yielded value (per-.next() ALS re-entry)', async ({
+  test('XrpcOperationContext.als is in scope during each yielded value (per-.next() ALS re-entry)', async ({
     assert,
   }) => {
     // Regression test for: async generators capture ALS at .next() time, NOT
@@ -294,8 +294,8 @@ test.group('createXrpcExecutor — subscription path', (group) => {
     const observed: { nsid: string | undefined }[] = []
     const executor = executorWithFn(STREAM, async function* () {
       for (let n = 1; n <= 3; n++) {
-        const fromAls = XrpcContext.als.getStore()
-        observed.push({ nsid: (fromAls?.lexicon as any)?.nsid })
+        const fromAls = XrpcSubscriptionContext.get()
+        observed.push({ nsid: fromAls?.lexicon.nsid })
         yield { $type: 'com.example.stream#tick', n }
       }
     })

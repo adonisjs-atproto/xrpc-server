@@ -12,10 +12,7 @@ test.group('XrpcOperationContext — static surface', () => {
   })
 
   test('getOrFail() throws outside any als.run scope', ({ assert }) => {
-    assert.throws(
-      () => XrpcOperationContext.getOrFail(),
-      /XrpcOperationContext is not available/
-    )
+    assert.throws(() => XrpcOperationContext.getOrFail(), /XrpcOperationContext is not available/)
   })
 
   test('exposes static .macro from Macroable', ({ assert }) => {

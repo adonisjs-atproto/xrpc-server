@@ -318,17 +318,19 @@ export class XrpcContextFactory {
   create<L extends XrpcLexicon>(): XrpcContext<L>
   // Implementation signature.
   create<L extends XrpcLexicon>(): XrpcContext<L> {
-    const lexicon = this.#params.lexicon as L | undefined
+    // No `as L` cast here — the discriminator field `lexicon.type` is on the
+    // base XrpcLexicon union, so TS's natural discriminated-union narrowing
+    // works against the union type directly. The L parameterization is
+    // confined to the return cast, which is unavoidable anyway (TS can't tie
+    // the runtime `lexicon.type` branch back to a free generic L).
+    const lexicon = this.#params.lexicon
     if (!lexicon) {
       throw new Error('XrpcContextFactory: lexicon is required — call .merge({ lexicon }) first')
     }
 
     const httpCtx = new HttpContextFactory().create()
     const shared = {
-      lexicon,
       request: this.#params.request ?? httpCtx.request,
-      params:
-        (this.#params.params as unknown as InferParams<L>) ?? ({} as unknown as InferParams<L>),
       signal: this.#params.signal ?? new AbortController().signal,
       logger: this.#params.logger ?? httpCtx.logger,
       containerResolver: this.#params.containerResolver ?? httpCtx.containerResolver,
@@ -336,16 +338,20 @@ export class XrpcContextFactory {
     }
 
     if (lexicon.type === 'xrpc_subscription') {
+      // `lexicon` narrowed to XrpcSubscriptionLexicon via discriminated union.
       return new XrpcSubscriptionContext({
         ...shared,
-        lexicon: lexicon as XrpcSubscriptionLexicon,
+        lexicon,
+        params: (this.#params.params ?? {}) as InferParams<XrpcSubscriptionLexicon>,
       }) as XrpcContext<L>
     }
 
+    // `lexicon` narrowed to XrpcQueryLexicon | XrpcProcedureLexicon.
     return new XrpcHttpContext({
       ...shared,
-      lexicon: lexicon as XrpcQueryLexicon | XrpcProcedureLexicon,
-      input: (this.#params.input as unknown as InferInput<L>) ?? (undefined as any),
+      lexicon,
+      params: (this.#params.params ?? {}) as InferParams<XrpcQueryLexicon | XrpcProcedureLexicon>,
+      input: this.#params.input as InferInput<XrpcQueryLexicon | XrpcProcedureLexicon>,
     }) as XrpcContext<L>
   }
 }
@@ -368,6 +374,8 @@ const wide = new XrpcContextFactory()
 ```
 
 The two casts inside the implementation (`as XrpcContext<L>` at each return) are the contained price of the runtime branch — TypeScript verifies they're sound against the wide implementation signature; the overloads are what give callers the narrowed type without any cast on their side.
+
+The casts on `params` and `input` are residual: those values arrive from `this.#params` as `Record<string, any>` / `unknown` (the loose merge shape), so we cast to the post-narrow lexicon's `InferParams` / `InferInput`. These are not new casts — the current factory has the same casts against `L`-parameterized variants. The change is that the new shape casts against the post-narrow concrete lexicon kind, which is a strictly tighter target type than `L`.
 
 ### Behavioral parity
 

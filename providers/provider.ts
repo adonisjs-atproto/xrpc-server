@@ -8,7 +8,7 @@ import { XrpcRouter } from '../src/router/main.ts'
 import { XrpcServer } from '../src/xrpc_server.js'
 import { XrpcSerializer } from '../src/serializer.js'
 import { XrpcService, REPORTED } from '../src/xrpc_service.js'
-import { XrpcContext } from '../src/context.js'
+import { XrpcOperationContext } from '../src/context/main.js'
 import { XrpcError, InternalServerError } from '../src/errors.js'
 import { createXrpcExecutor } from '../src/executor.ts'
 
@@ -178,9 +178,9 @@ export default class XrpcProvider implements ContainerProviderContract {
  * reaching our executor (request parsing, lexicon assertion, route
  * matching) have no `REPORTED` stamp and get the full handler invocation.
  *
- * **XrpcContext.get()** returns the active context if the executor had
+ * **XrpcOperationContext.get()** returns the active context if the executor had
  * entered the ALS before throwing (HTTP handler-side errors). Atcute-
- * internal errors raised before the executor runs have no XrpcContext —
+ * internal errors raised before the executor runs have no XrpcOperationContext —
  * `get()` returns undefined and we pass null to the consumer's handler.
  */
 function makeAtcuteHttpHook(xrpc: XrpcService) {
@@ -205,7 +205,7 @@ function makeAtcuteHttpHook(xrpc: XrpcService) {
       return xrpcErrorToResponse(fallback)
     }
 
-    const xrpcCtx = XrpcContext.get() ?? null
+    const xrpcCtx = XrpcOperationContext.get() ?? null
 
     if (handler.shouldReport(err)) {
       try {
@@ -252,7 +252,7 @@ function makeSocketErrorObserver(xrpc: XrpcService) {
     const handler = await xrpc.getRegisteredErrorHandler()
     if (!handler) return
 
-    const xrpcCtx = XrpcContext.get() ?? null
+    const xrpcCtx = XrpcOperationContext.get() ?? null
 
     if (handler.shouldReport(error)) {
       try {

@@ -14,8 +14,7 @@ import { setupApp } from './helpers.js'
 import { ExceptionHandler } from '../src/exception_handler.js'
 import { NotFoundError } from '../src/errors.js'
 import type { XrpcError } from '../src/errors.js'
-import type { XrpcContext } from '../src/context.js'
-import type { XrpcLexicon } from '../src/types.js'
+import type { XrpcOperationContext } from '../src/context/main.js'
 import { injectXrpcSubscription } from '../src/test_utils.js'
 
 const FAIL_PROC = procedure('com.example.fail', {
@@ -33,11 +32,11 @@ test.group('end-to-end error reporting', () => {
   test('procedure handler throw: report() fires once + handle()-returned XrpcError encoded', async ({
     assert,
   }) => {
-    const reportCalls: Array<{ err: unknown; ctx: XrpcContext<XrpcLexicon> | null }> = []
+    const reportCalls: Array<{ err: unknown; ctx: XrpcOperationContext | null }> = []
     const handleReturn = new NotFoundError('sanitized in handle()')
 
     class SpyHandler extends ExceptionHandler {
-      override async report(err: unknown, ctx: XrpcContext<XrpcLexicon> | null) {
+      override async report(err: unknown, ctx: XrpcOperationContext | null) {
         reportCalls.push({ err, ctx })
       }
       override async handle(_err: unknown) {

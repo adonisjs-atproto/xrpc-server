@@ -1,8 +1,7 @@
 import type { ApplicationService } from '@adonisjs/core/types'
 
 import { XrpcError, InternalServerError } from './errors.js'
-import type { XrpcContext } from './context.js'
-import type { XrpcLexicon } from './types.js'
+import type { XrpcOperationContext } from './context/main.js'
 
 /**
  * Base class for XRPC exception handlers. Consumers' app/exceptions/xrpc_handler.ts
@@ -42,10 +41,13 @@ export class ExceptionHandler {
    * Default: no-op. Consumers add their reporting code by overriding.
    *
    * ctx is null for atcute-internal errors raised before the dispatch
-   * executor materializes an XrpcContext (request parsing failures,
-   * etc.) — guard with ctx?.lexicon.nsid etc.
+   * executor materializes an XrpcOperationContext (request parsing
+   * failures, etc.). When non-null, ctx is the base reference — narrow with
+   * isHttpContext / isSubscriptionContext from
+   * `@thisismissem/adonisjs-atproto-xrpc` for lexicon-typed reads
+   * (.lexicon, .params, .input, .stream, .response).
    */
-  async report(_error: unknown, _ctx: XrpcContext<XrpcLexicon> | null): Promise<void> {
+  async report(_error: unknown, _ctx: XrpcOperationContext | null): Promise<void> {
     // No-op by default.
   }
 
@@ -63,7 +65,7 @@ export class ExceptionHandler {
    * Override to customize sanitization. Call super.handle(error, ctx)
    * to keep the env-aware default behavior and layer custom logic on top.
    */
-  async handle(error: unknown, _ctx: XrpcContext<XrpcLexicon> | null): Promise<XrpcError> {
+  async handle(error: unknown, _ctx: XrpcOperationContext | null): Promise<XrpcError> {
     if (error instanceof XrpcError) return error
     if (this.app.inProduction) {
       return new InternalServerError('Internal Server Error')

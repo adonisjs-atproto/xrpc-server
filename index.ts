@@ -12,7 +12,17 @@ export { defineConfig } from './src/define_config.js'
 export { XrpcRouter, XrpcRoute, XrpcRouteGroup } from './src/router/main.ts'
 
 // Runtime context types
-export { XrpcContext } from './src/context.js'
+export {
+  XrpcOperationContext,
+  XrpcHttpContext,
+  XrpcSubscriptionContext,
+  isHttpContext,
+  isSubscriptionContext,
+  type XrpcContext,
+  type XrpcOperationContextParams,
+  type XrpcHttpContextParams,
+  type XrpcSubscriptionContextParams,
+} from './src/context/main.js'
 export { XrpcResponse } from './src/response.js'
 export { XrpcStream } from './src/stream.js'
 

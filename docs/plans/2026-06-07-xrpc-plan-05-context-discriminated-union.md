@@ -531,7 +531,7 @@ export class XrpcSubscriptionContext<
    * The T generic accepts either a bare lexicon schema or a namespace
    * wrapper (`LexiconInput<L>`) — same shape `router.xrpc.subscription`
    * takes for registration. Caller-assertion semantics for L (same trade-
-   * off as XrpcHttpContext.get / getOrFail — see those docstrings).
+   * off as XrpcHttpContext.get / getOrFail — see those doc comments).
    */
   static get<
     T extends LexiconInput<XrpcSubscriptionLexicon> = XrpcSubscriptionLexicon,
@@ -1106,7 +1106,7 @@ async function* wrapSubscriptionIterator(
 pnpm test
 ```
 
-Expected: PASS. The executor is now using the new classes; existing tests of dispatch behaviour (`tests/dispatch.spec.ts`, `tests/dispatch_subscription.spec.ts`, `tests/xrpc_server.spec.ts`) still pass because the runtime behaviour is unchanged. The OLD `src/context.ts` is still present and exports the OLD `XrpcContext` class — `tests/context.spec.ts` continues to pass against it until Task 8 removes the file. The old class is now orphaned (no production code imports it) but harmless.
+Expected: PASS. The executor is now using the new classes; existing tests of dispatch behavior (`tests/dispatch.spec.ts`, `tests/dispatch_subscription.spec.ts`, `tests/xrpc_server.spec.ts`) still pass because the runtime behavior is unchanged. The OLD `src/context.ts` is still present and exports the OLD `XrpcContext` class — `tests/context.spec.ts` continues to pass against it until Task 8 removes the file. The old class is now orphaned (no production code imports it) but harmless.
 
 - [ ] **Step 3: Commit**
 
@@ -1145,7 +1145,7 @@ Then in the file body, replace **all** occurrences of `XrpcContext.get()` with `
 - Line 208 (inside `makeAtcuteHttpHook`)
 - Line 255 (inside `makeSocketErrorObserver`)
 
-The surrounding docstring on `makeAtcuteHttpHook` (around lines 181–184) mentions "**XrpcContext.get()** returns the active context…". Update that prose reference to `XrpcOperationContext.get()` as well, for consistency.
+The surrounding doc comment on `makeAtcuteHttpHook` (around lines 181–184) mentions "**XrpcContext.get()** returns the active context…". Update that prose reference to `XrpcOperationContext.get()` as well, for consistency.
 
 - [ ] **Step 2: Update `src/exception_handler.ts`**
 
@@ -1186,7 +1186,7 @@ Then update the `report` and `handle` signatures to drop the `<XrpcLexicon>` gen
   }
 ```
 
-The docstring above `report` mentions "ctx is null for atcute-internal errors raised before the dispatch executor materializes an XrpcContext (request parsing failures, etc.) — guard with ctx?.lexicon.nsid etc." — that guidance is now subtly wrong because `XrpcOperationContext` doesn't carry `lexicon` (it's on the subclasses). Update to:
+The doc comment above `report` mentions "ctx is null for atcute-internal errors raised before the dispatch executor materializes an XrpcContext (request parsing failures, etc.) — guard with ctx?.lexicon.nsid etc." — that guidance is now subtly wrong because `XrpcOperationContext` doesn't carry `lexicon` (it's on the subclasses). Update to:
 
 ```ts
    * ctx is null for atcute-internal errors raised before the dispatch

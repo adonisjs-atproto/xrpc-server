@@ -17,7 +17,7 @@ A single `AsyncLocalStorage` lives on the abstract base. Each subclass exposes t
 - `XrpcHttpContext.getOrFail()` — returns the narrowed `XrpcHttpContext`; throws cleanly if called from a subscription scope.
 - `XrpcSubscriptionContext.getOrFail()` — symmetric.
 
-The change is type-shape-only: runtime behaviour (executor branching, ALS-scope semantics, error-handler reporter signatures, serializer pass-through) is preserved.
+The change is type-shape-only: runtime behavior (executor branching, ALS-scope semantics, error-handler reporter signatures, serializer pass-through) is preserved.
 
 ## Motivation
 
@@ -281,15 +281,97 @@ return XrpcOperationContext.als.run(xrpcCtx, async () => { /* same body as today
 | `src/exception_handler.ts` | Type-only import — `XrpcContext` → `XrpcOperationContext` for the union case, or the concrete subclass for kind-specific reporters. |
 | `providers/provider.ts:208,255` | `XrpcContext.get() ?? null` → `XrpcOperationContext.get() ?? null`. (Reports run against either kind; the union is correct.) |
 | `index.ts:15` | `export { XrpcContext } from './src/context.js'` → re-export the three concrete classes + the `XrpcContext` type alias from `./src/context/main.js`. |
-| `factories/xrpc.ts` (`XrpcContextFactory`) | The factory's `create()` method branches on `lexicon.type` to construct the right subclass. Return type stays `XrpcContext<L>` (the type alias resolves to the concrete subclass at the call site). |
+| `factories/xrpc.ts` (`XrpcContextFactory`) | `create()` becomes an overloaded method that narrows its return type based on the inferred lexicon kind — see [Factory narrowing](#factory-narrowing) below. Runtime branches on `lexicon.type` to construct the right subclass. |
 | `tests/context.spec.ts` | Reorganise: split into `tests/context/operation.spec.ts`, `tests/context/http.spec.ts`, `tests/context/subscription.spec.ts`. The ALS / Macroable tests move to the operation spec; the response-state tests move to http; the stream tests move to subscription. The cast workaround in the construction helper goes away. |
 | `tests/xrpc_server.spec.ts:288,297` | `XrpcContext.als.getStore()` → `XrpcOperationContext.als.getStore()`. (The test is about ALS scope re-entry inside subscription iteration; it doesn't care about narrowing.) |
 | `tests/provider_error_reporting.spec.ts:36,40` | `XrpcContext<XrpcLexicon> \| null` → `XrpcOperationContext<XrpcLexicon> \| null` in the reporter signature. |
 | `tests/factory.spec.ts:3` | `XrpcContext` type ref updates to whichever concrete class the factory returns. |
 
-### Behavioural parity
+### Factory narrowing
 
-The runtime behaviour change is zero — the executor still constructs a context, runs the handler inside an ALS scope, and reads `response.state` (HTTP) or iterates the user's `AsyncIterable` (subscription) the same way. The only runtime difference is **which class** is constructed in each branch; the ALS storage, the scope semantics, and the serializer pass-through are unchanged.
+`XrpcContextFactory.create()` today is a single signature returning `XrpcContext<L>`:
+
+```ts
+create<L extends XrpcLexicon>(): XrpcContext<L>
+```
+
+That signature relies on the consumer asserting `L` at the call site (`factory.create<typeof myProcedureLex>()`). With the union-alias `XrpcContext<L>`, this *does* resolve to the concrete subclass when `L` is concrete — but TypeScript can't propagate the runtime `lexicon.type` check back to `L` inside the body, so the construction site needs a cast no matter what.
+
+The right shape is overload signatures — one per lexicon-kind constraint, plus a wide implementation signature. TypeScript picks the most specific overload based on the inferred `L`, so callers get the narrowed concrete type without a cast on their side:
+
+```ts
+// factories/xrpc.ts
+
+export class XrpcContextFactory {
+  #params: Partial<MergeParams<XrpcLexicon>> = {}
+
+  merge(params: Partial<MergeParams<XrpcLexicon>>): this {
+    this.#params = { ...this.#params, ...params }
+    return this
+  }
+
+  // Overload 1: subscription lexicons → XrpcSubscriptionContext.
+  create<L extends XrpcSubscriptionLexicon>(): XrpcSubscriptionContext<L>
+  // Overload 2: query/procedure lexicons → XrpcHttpContext.
+  create<L extends XrpcQueryLexicon | XrpcProcedureLexicon>(): XrpcHttpContext<L>
+  // Overload 3 (wide fallback): preserves the existing XrpcContext<L> entry point.
+  create<L extends XrpcLexicon>(): XrpcContext<L>
+  // Implementation signature.
+  create<L extends XrpcLexicon>(): XrpcContext<L> {
+    const lexicon = this.#params.lexicon as L | undefined
+    if (!lexicon) {
+      throw new Error('XrpcContextFactory: lexicon is required — call .merge({ lexicon }) first')
+    }
+
+    const httpCtx = new HttpContextFactory().create()
+    const shared = {
+      lexicon,
+      request: this.#params.request ?? httpCtx.request,
+      params:
+        (this.#params.params as unknown as InferParams<L>) ?? ({} as unknown as InferParams<L>),
+      signal: this.#params.signal ?? new AbortController().signal,
+      logger: this.#params.logger ?? httpCtx.logger,
+      containerResolver: this.#params.containerResolver ?? httpCtx.containerResolver,
+      requestId: this.#params.requestId ?? httpCtx.request.id() ?? 'test-req-id',
+    }
+
+    if (lexicon.type === 'xrpc_subscription') {
+      return new XrpcSubscriptionContext({
+        ...shared,
+        lexicon: lexicon as XrpcSubscriptionLexicon,
+      }) as XrpcContext<L>
+    }
+
+    return new XrpcHttpContext({
+      ...shared,
+      lexicon: lexicon as XrpcQueryLexicon | XrpcProcedureLexicon,
+      input: (this.#params.input as unknown as InferInput<L>) ?? (undefined as any),
+    }) as XrpcContext<L>
+  }
+}
+```
+
+Call-site behavior:
+
+```ts
+const subCtx = new XrpcContextFactory()
+  .merge({ lexicon: subscribeLabels })
+  .create<typeof subscribeLabels>()        // → XrpcSubscriptionContext<typeof subscribeLabels>
+
+const procCtx = new XrpcContextFactory()
+  .merge({ lexicon: createReport, input: { ... } })
+  .create<typeof createReport>()           // → XrpcHttpContext<typeof createReport>
+
+const wide = new XrpcContextFactory()
+  .merge({ lexicon })
+  .create()                                // → XrpcContext<XrpcLexicon> (the union)
+```
+
+The two casts inside the implementation (`as XrpcContext<L>` at each return) are the contained price of the runtime branch — TypeScript verifies they're sound against the wide implementation signature; the overloads are what give callers the narrowed type without any cast on their side.
+
+### Behavioral parity
+
+The runtime behavior change is zero — the executor still constructs a context, runs the handler inside an ALS scope, and reads `response.state` (HTTP) or iterates the user's `AsyncIterable` (subscription) the same way. The only runtime difference is **which class** is constructed in each branch; the ALS storage, the scope semantics, and the serializer pass-through are unchanged.
 
 ### Memory / context-narrowing follow-up
 

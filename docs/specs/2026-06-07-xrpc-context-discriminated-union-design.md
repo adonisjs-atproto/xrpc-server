@@ -14,8 +14,8 @@ This spec reshapes the type as a textbook discriminated union: an abstract base 
 A single `AsyncLocalStorage` lives on the abstract base. Each subclass exposes typed `static get() / getOrFail()` accessors that read the shared storage and narrow via `instanceof` — so consumers get one of three access patterns:
 
 - `XrpcOperationContext.getOrFail()` — returns the non-generic base reference; for code that only reads cross-cutting fields (logger, containerResolver, requestId) and doesn't care which kind of handler scope it's in. The existing `XrpcContext.get()` callers in `providers/provider.ts` (exception reporting) fall into this bucket.
-- `XrpcHttpContext.getOrFail()` — returns the narrowed `XrpcHttpContext`; throws cleanly if called from a subscription scope. Accepts an optional `<L>` generic so callers who know their lexicon (e.g. test fixtures, service code with a known calling handler) can assert lexicon-typed access — `XrpcHttpContext.getOrFail<typeof createReport>()` returns `XrpcHttpContext<typeof createReport>` with precisely-typed `.lexicon` / `.params` / `.input`.
-- `XrpcSubscriptionContext.getOrFail()` — symmetric, including the optional `<L>` generic.
+- `XrpcHttpContext.getOrFail()` — returns the narrowed `XrpcHttpContext`; throws cleanly if called from a subscription scope. Accepts an optional `<T>` generic in `LexiconInput<L>` shape (matching `router.xrpc.procedure / query`'s registration signature), so callers can assert their lexicon as either the namespace form (`<typeof CreateReport>`) or the bare schema form (`<typeof CreateReport.mainSchema>`). The return type unwraps the namespace via `ResolveLexicon<T>`, so `.lexicon` / `.params` / `.input` are typed against the bare schema regardless of which form the caller used.
+- `XrpcSubscriptionContext.getOrFail()` — symmetric, including the optional `<T>` generic with the same `LexiconInput<L>` shape.
 
 The change is type-shape-only: runtime behavior (executor branching, ALS-scope semantics, error-handler reporter signatures, serializer pass-through) is preserved.
 
@@ -106,27 +106,39 @@ export class XrpcHttpContext<
 > extends XrpcOperationContext {
   // Shadow the base's accessors with subclass-typed returns. Both read the
   // shared XrpcOperationContext.als; the instanceof check narrows to HTTP-kind.
-  // The L generic lets callers assert their lexicon — `XrpcHttpContext.getOrFail<typeof createReport>()`
-  // returns the context with `.lexicon`, `.params`, `.input` typed against
-  // createReport instead of the default wide union.
   //
-  // The L assertion is NOT runtime-verified against the actual handler's
+  // The T generic lets callers assert their lexicon as either a bare schema
+  // or a namespace wrapper — same `LexiconInput<L>` shape the router takes
+  // for registration. `ResolveLexicon<T>` unwraps the namespace form back to
+  // the bare lexicon for the return type. Example:
+  //   XrpcHttpContext.getOrFail<typeof CreateReport>()             // namespace
+  //   XrpcHttpContext.getOrFail<typeof CreateReport.mainSchema>()  // bare
+  // Both return `XrpcHttpContext<<bare schema type>>` with `.lexicon`,
+  // `.params`, `.input` typed precisely.
+  //
+  // The T assertion is NOT runtime-verified against the actual handler's
   // lexicon — instanceof only verifies HTTP-kind. A caller that asserts the
-  // wrong L gets the same kind of type-vs-runtime mismatch they'd get from
+  // wrong T gets the same kind of type-vs-runtime mismatch they'd get from
   // `as XrpcHttpContext<L>`, just packaged into the method API. Callers that
   // don't care about lexicon precision omit the type argument and get the
   // default wide-L context.
   static get<
-    L extends XrpcQueryLexicon | XrpcProcedureLexicon = XrpcQueryLexicon | XrpcProcedureLexicon,
-  >(): XrpcHttpContext<L> | undefined {
+    T extends LexiconInput<
+      XrpcQueryLexicon | XrpcProcedureLexicon
+    > = XrpcQueryLexicon | XrpcProcedureLexicon,
+  >(): XrpcHttpContext<ResolveLexicon<T>> | undefined {
     const ctx = XrpcOperationContext.als.getStore()
-    return ctx instanceof XrpcHttpContext ? (ctx as XrpcHttpContext<L>) : undefined
+    return ctx instanceof XrpcHttpContext
+      ? (ctx as XrpcHttpContext<ResolveLexicon<T>>)
+      : undefined
   }
 
   static getOrFail<
-    L extends XrpcQueryLexicon | XrpcProcedureLexicon = XrpcQueryLexicon | XrpcProcedureLexicon,
-  >(): XrpcHttpContext<L> {
-    const ctx = XrpcHttpContext.get<L>()
+    T extends LexiconInput<
+      XrpcQueryLexicon | XrpcProcedureLexicon
+    > = XrpcQueryLexicon | XrpcProcedureLexicon,
+  >(): XrpcHttpContext<ResolveLexicon<T>> {
+    const ctx = XrpcHttpContext.get<T>()
     if (!ctx) {
       throw new RuntimeException(
         'XrpcHttpContext is not available — called outside an XRPC HTTP handler scope'
@@ -158,19 +170,21 @@ export class XrpcHttpContext<
 export class XrpcSubscriptionContext<
   L extends XrpcSubscriptionLexicon = XrpcSubscriptionLexicon,
 > extends XrpcOperationContext {
-  // Same generic-with-default pattern as XrpcHttpContext — see comments there
-  // for the runtime-verification trade-off on the L assertion.
-  static get<L extends XrpcSubscriptionLexicon = XrpcSubscriptionLexicon>():
-    | XrpcSubscriptionContext<L>
-    | undefined {
+  // Same LexiconInput<L> + ResolveLexicon<T> pattern as XrpcHttpContext —
+  // see comments there for the runtime-verification trade-off on T.
+  static get<
+    T extends LexiconInput<XrpcSubscriptionLexicon> = XrpcSubscriptionLexicon,
+  >(): XrpcSubscriptionContext<ResolveLexicon<T>> | undefined {
     const ctx = XrpcOperationContext.als.getStore()
-    return ctx instanceof XrpcSubscriptionContext ? (ctx as XrpcSubscriptionContext<L>) : undefined
+    return ctx instanceof XrpcSubscriptionContext
+      ? (ctx as XrpcSubscriptionContext<ResolveLexicon<T>>)
+      : undefined
   }
 
   static getOrFail<
-    L extends XrpcSubscriptionLexicon = XrpcSubscriptionLexicon,
-  >(): XrpcSubscriptionContext<L> {
-    const ctx = XrpcSubscriptionContext.get<L>()
+    T extends LexiconInput<XrpcSubscriptionLexicon> = XrpcSubscriptionLexicon,
+  >(): XrpcSubscriptionContext<ResolveLexicon<T>> {
+    const ctx = XrpcSubscriptionContext.get<T>()
     if (!ctx) {
       throw new RuntimeException(
         'XrpcSubscriptionContext is not available — called outside an XRPC subscription handler scope'
@@ -307,9 +321,9 @@ The existing `XrpcContextParams<L>` interface is removed. Callers update to the 
 |---|---|---|
 | Context-agnostic read (logger, containerResolver, requestId) — typically infrastructure code that doesn't care which kind of handler scope it's in | `XrpcOperationContext.getOrFail()` | `XrpcOperationContext` (non-generic); cross-cutting fields directly typed. For lexicon-typed reads, narrow with `isHttpContext` / `isSubscriptionContext` from `src/context/helpers.ts`. |
 | HTTP-handler-side service code that needs `ctx.response` (no lexicon precision needed) | `XrpcHttpContext.getOrFail()` | `XrpcHttpContext` with default wide L; throws if currently in a subscription scope |
-| HTTP-handler-side code that wants lexicon-typed access | `XrpcHttpContext.getOrFail<typeof myProcLex>()` | `XrpcHttpContext<typeof myProcLex>` — `.lexicon`, `.params`, `.input` typed precisely. L is a caller assertion, NOT runtime-verified against the actual scope's lexicon; `instanceof` only verifies HTTP-kind. |
+| HTTP-handler-side code that wants lexicon-typed access | `XrpcHttpContext.getOrFail<typeof MyProc>()` (namespace) or `XrpcHttpContext.getOrFail<typeof MyProc.mainSchema>()` (bare) | `XrpcHttpContext<<bare schema type>>` — `.lexicon`, `.params`, `.input` typed precisely against the resolved bare schema. The assertion is NOT runtime-verified against the actual scope's lexicon; `instanceof` only verifies HTTP-kind. |
 | Subscription-handler-side service code that needs `ctx.stream` (no lexicon precision needed) | `XrpcSubscriptionContext.getOrFail()` | `XrpcSubscriptionContext` with default wide L; throws if currently in an HTTP scope |
-| Subscription-handler-side code that wants lexicon-typed access | `XrpcSubscriptionContext.getOrFail<typeof mySubLex>()` | `XrpcSubscriptionContext<typeof mySubLex>` — `.lexicon`, `.params`, `.stream` typed precisely. Same caller-assertion semantics as the HTTP variant. |
+| Subscription-handler-side code that wants lexicon-typed access | `XrpcSubscriptionContext.getOrFail<typeof MySub>()` (namespace) or `XrpcSubscriptionContext.getOrFail<typeof MySub.mainSchema>()` (bare) | `XrpcSubscriptionContext<<bare schema type>>` — `.lexicon`, `.params`, `.stream` typed precisely. Same caller-assertion semantics as the HTTP variant. |
 
 The throw on wrong-kind access is intentional: a service that calls `XrpcHttpContext.getOrFail()` from a subscription scope is incorrectly composed, and a loud failure beats a silent `undefined`.
 

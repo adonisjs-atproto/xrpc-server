@@ -21,11 +21,26 @@ export { isHttpContext, isSubscriptionContext } from './helpers.ts'
  * accessible without narrowing.
  *
  * For wide L (e.g. `XrpcContext<XrpcLexicon>`), the conditional distributes
- * over the lexicon union, yielding the full discriminated union
- * (`XrpcHttpContext<XrpcQueryLexicon> | XrpcHttpContext<XrpcProcedureLexicon>
- * | XrpcSubscriptionContext<XrpcSubscriptionLexicon>`). Use this form in
- * signatures that accept any kind of context; narrow via `isHttpContext` /
- * `isSubscriptionContext` from `./helpers.ts`.
+ * over the lexicon union, yielding a distributed union. Use this form in
+ * signatures that accept any kind of context.
+ *
+ * **Narrowing caveat:** Do NOT pass `XrpcContext<XrpcLexicon>` to
+ * `isHttpContext` / `isSubscriptionContext` — the intersection
+ * `XrpcContext<XrpcLexicon> & XrpcHttpContext` collapses to `never` because
+ * the distributed union includes `XrpcSubscriptionContext` which has a
+ * conflicting `type` literal. Use `XrpcOperationContext` as the parameter
+ * type for code that needs to narrow via the predicates:
+ *
+ * @example
+ * // ✅ Works — base type as parameter
+ * function process(ctx: XrpcOperationContext) {
+ *   if (isHttpContext(ctx)) ctx.response  // XrpcOperationContext & XrpcHttpContext
+ * }
+ *
+ * // ⚠️ Narrows to `never` — distributed alias as parameter
+ * function broken(ctx: XrpcContext<XrpcLexicon>) {
+ *   if (isHttpContext(ctx)) ctx.response  // never
+ * }
  */
 export type XrpcContext<L extends XrpcLexicon> = L extends XrpcSubscriptionLexicon
   ? XrpcSubscriptionContext<L>

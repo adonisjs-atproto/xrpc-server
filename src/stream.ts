@@ -25,6 +25,14 @@ export class XrpcStream<L extends XrpcSubscriptionLexicon> extends Macroable {
     return this.signal.aborted
   }
 
+  /**
+   * Build a typed message object. The return value must be yielded from the
+   * subscription handler — it is not sent to the client until the executor
+   * picks it up from the `AsyncIterable`.
+   *
+   * @example
+   * yield ctx.stream.message('#labels', { seq: cursor, labels: [...] })
+   */
   message<R extends XrpcMessageRef<L>>(ref: R, payload: XrpcMessagePayload<L, R>): MessageOf<L> {
     return {
       $type: `${this.lexicon.nsid}${ref}`,

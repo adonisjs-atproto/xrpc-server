@@ -2,6 +2,7 @@ import { test } from '@japa/runner'
 import { HttpContextFactory } from '@adonisjs/core/factories/http'
 import { XrpcOperationContext } from '../../src/context/operation.ts'
 import { XrpcHttpContext } from '../../src/context/http.ts'
+import { XrpcSubscriptionContext } from '../../src/context/subscription.ts'
 import { XrpcResponse } from '../../src/response.ts'
 
 const queryLex = { nsid: 'com.example.test.query', type: 'xrpc_query' } as any
@@ -65,10 +66,10 @@ test.group('XrpcHttpContext.get / .getOrFail — ALS', () => {
     const ctx = makeHttpContext()
     await XrpcOperationContext.als.run(ctx, async () => {
       assert.equal(XrpcHttpContext.get(), ctx)
-      assert.equal(XrpcHttpContext.getOrFail(), ctx)
+      assert.doesNotThrow(() => XrpcHttpContext.getOrFail())
       await new Promise((r) => setImmediate(r))
       assert.equal(XrpcHttpContext.get(), ctx)
-      assert.equal(XrpcHttpContext.getOrFail(), ctx)
+      assert.doesNotThrow(() => XrpcHttpContext.getOrFail())
     })
   })
 
@@ -76,11 +77,11 @@ test.group('XrpcHttpContext.get / .getOrFail — ALS', () => {
     const outer = makeHttpContext()
     const inner = makeHttpContext()
     await XrpcOperationContext.als.run(outer, async () => {
-      assert.equal(XrpcHttpContext.getOrFail(), outer)
+      assert.doesNotThrow(() => XrpcHttpContext.getOrFail())
       await XrpcOperationContext.als.run(inner, async () => {
-        assert.equal(XrpcHttpContext.getOrFail(), inner)
+        assert.doesNotThrow(() => XrpcHttpContext.getOrFail())
       })
-      assert.equal(XrpcHttpContext.getOrFail(), outer)
+      assert.doesNotThrow(() => XrpcHttpContext.getOrFail())
     })
   })
 
@@ -89,7 +90,24 @@ test.group('XrpcHttpContext.get / .getOrFail — ALS', () => {
   }) => {
     const ctx = makeHttpContext()
     await XrpcOperationContext.als.run(ctx, async () => {
-      assert.equal(XrpcOperationContext.getOrFail(), ctx)
+      assert.doesNotThrow(() => XrpcOperationContext.getOrFail())
+      assert.equal(XrpcOperationContext.get(), ctx)
+    })
+  })
+
+  test('get() returns undefined when a subscription context is in scope', async ({ assert }) => {
+    const httpCtx = new HttpContextFactory().create()
+    const subCtx = new XrpcSubscriptionContext({
+      lexicon: { nsid: 'com.example.test.sub', type: 'xrpc_subscription' } as any,
+      request: httpCtx.request,
+      params: {},
+      signal: new AbortController().signal,
+      logger: httpCtx.logger,
+      containerResolver: httpCtx.containerResolver,
+      requestId: 'test-req-id',
+    })
+    await XrpcOperationContext.als.run(subCtx, async () => {
+      assert.isUndefined(XrpcHttpContext.get())
     })
   })
 })

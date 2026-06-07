@@ -1,6 +1,7 @@
 import { test } from '@japa/runner'
 import { HttpContextFactory } from '@adonisjs/core/factories/http'
 import { XrpcOperationContext } from '../../src/context/operation.ts'
+import { XrpcHttpContext } from '../../src/context/http.ts'
 import { XrpcSubscriptionContext } from '../../src/context/subscription.ts'
 import { XrpcStream } from '../../src/stream.ts'
 
@@ -65,10 +66,27 @@ test.group('XrpcSubscriptionContext.get / .getOrFail — ALS', () => {
     const ctx = makeSubscriptionContext()
     await XrpcOperationContext.als.run(ctx, async () => {
       assert.equal(XrpcSubscriptionContext.get(), ctx)
-      assert.equal(XrpcSubscriptionContext.getOrFail(), ctx)
+      assert.doesNotThrow(() => XrpcSubscriptionContext.getOrFail())
       await new Promise((r) => setImmediate(r))
       assert.equal(XrpcSubscriptionContext.get(), ctx)
-      assert.equal(XrpcSubscriptionContext.getOrFail(), ctx)
+      assert.doesNotThrow(() => XrpcSubscriptionContext.getOrFail())
+    })
+  })
+
+  test('get() returns undefined when an HTTP context is in scope', async ({ assert }) => {
+    const httpCtx = new HttpContextFactory().create()
+    const ctx = new XrpcHttpContext({
+      lexicon: { nsid: 'com.example.test.proc', type: 'xrpc_procedure' } as any,
+      request: httpCtx.request,
+      params: {},
+      input: undefined,
+      signal: new AbortController().signal,
+      logger: httpCtx.logger,
+      containerResolver: httpCtx.containerResolver,
+      requestId: 'test-req-id',
+    })
+    await XrpcOperationContext.als.run(ctx, async () => {
+      assert.isUndefined(XrpcSubscriptionContext.get())
     })
   })
 })

@@ -50,7 +50,18 @@ export class XrpcContextFactory {
   // Overload 3 (wide fallback): the union alias for callers passing the
   // wide XrpcLexicon constraint.
   create<L extends XrpcLexicon>(): XrpcContext<L>
-  // Implementation signature.
+  /**
+   * Construct the context. **An explicit type argument is required to get a
+   * typed concrete subclass** — without one, TypeScript resolves overload 3
+   * (the wide union), and the result typed as `XrpcContext<XrpcLexicon>`:
+   *
+   * @example
+   * // ✅ Typed: ctx is XrpcHttpContext<XrpcProcedureLexicon>
+   * factory.merge({ lexicon: myProc }).create<XrpcProcedureLexicon>()
+   *
+   * // ⚠️ Wide union: ctx is XrpcContext<XrpcLexicon> — no .response / .stream
+   * factory.merge({ lexicon: myProc }).create()
+   */
   create<L extends XrpcLexicon>(): XrpcContext<L> {
     // No `as L` cast — discriminated-union narrowing on lexicon.type works
     // against the XrpcLexicon union naturally. The L parameterization is

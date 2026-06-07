@@ -214,24 +214,34 @@ import type { XrpcOperationContext } from './operation.js'
  * Narrows a context reference to `XrpcHttpContext`. Useful when consumer code
  * receives an `XrpcOperationContext` (or the wide `XrpcContext<XrpcLexicon>`
  * union) and needs to read `.response` / `.input` / lexicon-typed fields.
+ *
+ * Generic over `Ctx` so the narrowing preserves whatever refinement the
+ * caller already had — `Ctx & XrpcHttpContext` keeps the inferred lexicon
+ * parameter on the narrowed result, instead of collapsing to the default-L
+ * `XrpcHttpContext`.
  */
-export function isHttpContext(ctx: XrpcOperationContext): ctx is XrpcHttpContext {
+export function isHttpContext<Ctx extends XrpcOperationContext>(
+  ctx: Ctx
+): ctx is Ctx & XrpcHttpContext {
   return ctx instanceof XrpcHttpContext
 }
 
 /**
  * Narrows a context reference to `XrpcSubscriptionContext`. Symmetric to
  * `isHttpContext` — for code that needs to read `.stream` or
- * subscription-lexicon-typed fields.
+ * subscription-lexicon-typed fields. Also generic over `Ctx` to preserve L.
  */
-export function isSubscriptionContext(
-  ctx: XrpcOperationContext
-): ctx is XrpcSubscriptionContext {
+export function isSubscriptionContext<Ctx extends XrpcOperationContext>(
+  ctx: Ctx
+): ctx is Ctx & XrpcSubscriptionContext {
   return ctx instanceof XrpcSubscriptionContext
 }
 ```
 
-Both predicates are thin wrappers over `instanceof`. The win is readability at consumer call sites — `if (isSubscriptionContext(ctx))` documents intent better than `if (ctx instanceof XrpcSubscriptionContext)`, and the helper doesn't require importing the class type just to narrow.
+Both predicates are thin wrappers over `instanceof`. Two wins over an inline `instanceof` check:
+
+1. **Readability** at consumer call sites — `if (isSubscriptionContext(ctx))` documents intent better than `if (ctx instanceof XrpcSubscriptionContext)`, and the helper doesn't require importing the class type just to narrow.
+2. **L preservation** through the guard. Called on an input refined to a specific lexicon (e.g. `XrpcContext<typeof myLex>` or `XrpcSubscriptionContext<MySubLex> | XrpcHttpContext<MyProcLex>`), the intersection `Ctx & XrpcSubscriptionContext` keeps the original L inside the narrowed branch — calling `ctx.lexicon` / `ctx.params` after narrowing returns the originally-inferred types, not the default-L wide types.
 
 These are the resolution of the predicate-helper option flagged in the `xrpc-context-response-narrowing` memory note. They land alongside the discriminated-union restructuring rather than as a replacement for it — the union shape is the primary fix; predicates are the convenience over the resulting class hierarchy.
 

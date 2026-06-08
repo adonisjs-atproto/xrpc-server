@@ -5,7 +5,7 @@ import {
   XrpcOperationContext,
   XrpcSubscriptionContext,
 } from './context/main.ts'
-import { InternalServerError, NotFoundError, XrpcError } from './errors.ts'
+import { InternalServerError, XrpcError } from './errors.ts'
 import { type HandlerReturnFromCtx, type RouteInfo } from './router/types.ts'
 import { type XrpcSerializer } from './serializer.ts'
 import { type XrpcService, REPORTED } from './xrpc_service.ts'
@@ -69,13 +69,18 @@ export function createXrpcExecutor(deps: {
     const nsid = new URL(atcuteCtx.request.url).pathname.slice('/xrpc/'.length)
     const route = operations.get(nsid)
     if (!route) {
-      // 404 is the right wire-level response — from the client's perspective
-      // there's no such XRPC method on this server. The "atcute dispatched to
-      // us but the registry doesn't know it" framing is preserved as
-      // diagnostic context for logs; in normal operation atcute won't dispatch
-      // unregistered NSIDs to us, so seeing this in production means either a
-      // registry desync or a crafted URL that snuck past atcute's matcher.
-      throw new NotFoundError(`No XRPC method registered for NSID '${nsid}'`)
+      // This branch is for TypeScript type-narrowing on Map.get's `T |
+      // undefined` return, NOT a real not-found case. In normal operation
+      // atcute's `handleNotFound` hook (wired in providers/provider.ts)
+      // intercepts unregistered NSIDs and produces the 404 NotFound
+      // response — atcute never dispatches to this closure for those.
+      // If this branch DOES fire, it means atcute dispatched to us for an
+      // NSID we don't know about — a registry desync or a crafted URL that
+      // snuck past atcute's matcher. That's a server bug, not a client
+      // error, so InternalServerError is the correct wire shape.
+      throw new InternalServerError(
+        `XRPC executor invoked for unregistered NSID '${nsid}' — atcute's handleNotFound should have intercepted; treat as a registry-state bug`
+      )
     }
 
     // Async so both branches collapse to a single Promise return:

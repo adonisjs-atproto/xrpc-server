@@ -9,7 +9,7 @@ import { XrpcServer } from '../src/xrpc_server.js'
 import { XrpcSerializer } from '../src/serializer.js'
 import { XrpcService, REPORTED } from '../src/xrpc_service.js'
 import { XrpcOperationContext } from '../src/context/main.js'
-import { XrpcError, InternalServerError } from '../src/errors.js'
+import { XrpcError, InternalServerError, NotFoundError } from '../src/errors.js'
 import { createXrpcExecutor } from '../src/executor.ts'
 
 declare module '@adonisjs/core/types' {
@@ -103,9 +103,16 @@ export default class XrpcProvider implements ContainerProviderContract {
   }
 
   async ready() {
-    // Skip only in `console` env. The test env still needs the XrpcServer
-    // wired so functional tests can exercise the dispatch pipeline.
-    if (this.app.getEnvironment() === 'console') return
+    // Allowlist the environments where we need to wire HTTP-serving
+    // machinery. `web` is production; `test` is required because functional
+    // tests exercise the dispatch pipeline through a booted server. All
+    // other environments — `console` (ace commands), `repl` (interactive
+    // shell), `unknown` (unclassified), and any future AppEnvironments
+    // values AdonisJS adds — skip XrpcServer construction. AdonisJS doesn't
+    // boot a Node HTTP server in those envs, so the WebSocket-upgrade
+    // installation in XrpcServer.start() would have nothing to attach to.
+    const env = this.app.getEnvironment()
+    if (env !== 'web' && env !== 'test') return
 
     // By this point provider `start()` has already committed the XrpcRouter
     // — the executor sees the final operations map. We pass the live Map
@@ -128,6 +135,18 @@ export default class XrpcProvider implements ContainerProviderContract {
     const atcuteRouter = new XRPCRouter({
       websocket: ws.adapter,
       handleException: makeAtcuteHttpHook(xrpc),
+      handleNotFound: (request) => {
+        // atcute's default returns `new Response('Not Found', { status: 404 })`
+        // — plain text, bypassing the XRPC error wire shape. Reformat using
+        // our existing NotFoundError so unregistered-NSID responses match the
+        // convention every other error path produces:
+        // `{ error: 'NotFound', message: '...' }`. Per the atproto XRPC spec
+        // both 404 and 501 are valid here; we pick 404 because the consumer
+        // genuinely hasn't registered the NSID (vs. 501's "known but
+        // unimplemented" semantic).
+        const nsid = new URL(request.url).pathname.slice('/xrpc/'.length)
+        return xrpcErrorToResponse(new NotFoundError(`Method '${nsid}' not found on this server`))
+      },
       onSocketError: makeSocketErrorObserver(xrpc),
     })
     const executor = createXrpcExecutor({

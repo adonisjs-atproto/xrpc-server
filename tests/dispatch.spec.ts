@@ -1,23 +1,9 @@
 import { test } from '@japa/runner'
 import inject from 'light-my-request'
-import { object, procedure, query, string } from '@atcute/lexicons/validations'
 
 import { setupApp } from './helpers.js'
-
-// Use atcute's lexicon builders so the schemas have the `~run` fastpath
-// codegen atcute's `safeParse` requires. Plain object literals with
-// `{ type: 'object', shape: ... }` work for type-checking but crash at
-// runtime in `safeParse` (which calls `schema['~run']`).
-const PING = procedure('com.example.ping', {
-  params: null,
-  input: { type: 'lex', schema: object({}) },
-  output: null,
-})
-
-const ECHO_QUERY = query('com.example.echo', {
-  params: object({ msg: string() }),
-  output: null,
-})
+import { ECHO_QUERY, PING } from './fixtures/lexicons.js'
+import type { XrpcHttpContext } from '../src/context/http.ts'
 
 test.group('dispatch — HTTP procedure + query end-to-end', (group) => {
   let app: any
@@ -34,8 +20,10 @@ test.group('dispatch — HTTP procedure + query end-to-end', (group) => {
           // The provider's ready() (which fires after this) commits the
           // XrpcRouter and starts the XrpcServer.
           const router = await testApp.container.make('router')
-          router.xrpc.procedure(PING as any, () => ({ pong: true }))
-          router.xrpc.query(ECHO_QUERY as any, (xrpcCtx: any) => ({ echoed: xrpcCtx.params.msg }))
+          router.xrpc.procedure(PING, () => ({ pong: true }))
+          router.xrpc.query(ECHO_QUERY, (xrpcCtx: XrpcHttpContext<typeof ECHO_QUERY>) => ({
+            echoed: xrpcCtx.params.msg,
+          }))
 
           // Register a non-XRPC Adonis route so the fall-through test below
           // can prove the dispatch middleware called next() rather than just
@@ -69,6 +57,26 @@ test.group('dispatch — HTTP procedure + query end-to-end', (group) => {
     )
     assert.equal(response.statusCode, 200, `response body: ${response.payload}`)
     assert.deepEqual(JSON.parse(response.payload), { echoed: 'hello' })
+  })
+
+  test('GET /xrpc/com.example.notRegistered returns a structured 404 NotFound', async ({
+    assert,
+  }) => {
+    const server = await app.container.make('server')
+    await server.boot()
+    const response = await inject(server.handle.bind(server), {
+      headers: { Accept: 'application/json' },
+    }).get('/xrpc/com.example.notRegistered')
+    // Our provider wires atcute's handleNotFound hook to reformat the
+    // unregistered-NSID response from atcute's default plain-text 'Not
+    // Found' into the XRPC error wire shape. 404 NotFound is consistent
+    // with the atproto reference server's spec quote for "server does not
+    // support this endpoint."
+    assert.equal(response.statusCode, 404, `response body: ${response.payload}`)
+    assert.deepEqual(JSON.parse(response.payload), {
+      error: 'NotFound',
+      message: "Method 'com.example.notRegistered' not found on this server",
+    })
   })
 
   test('non-/xrpc/* paths fall through the dispatch middleware to an Adonis route', async ({

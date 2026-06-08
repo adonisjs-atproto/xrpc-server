@@ -180,13 +180,33 @@ test.group('createXrpcExecutor — HTTP path', (group) => {
     const atcuteCtx = atcuteHttpCtx('http://localhost/xrpc/com.example.ping', { method: 'POST' })
     const requestCtx = makeRequestCtx()
 
-    await assert.rejects(async () => executor(atcuteCtx, requestCtx), /boom from handler/)
-    try {
-      await executor(atcuteCtx, requestCtx)
-    } catch (err: any) {
-      assert.equal(err.constructor.name, 'InternalServerError')
-      assert.equal(err.errorName, 'InternalServerError')
-    }
+    await assert.rejects(
+      async () => executor(atcuteCtx, requestCtx),
+      InternalServerError,
+      /boom from handler/
+    )
+  })
+
+  test('wraps a non-Error throw (string, object, etc.) using String() coercion', async ({
+    assert,
+  }) => {
+    // JS lets handlers throw any value (not just Error instances). The
+    // fallback path in runConsumerHandler falls back to String(err) for
+    // these — covering throw-a-string is enough to exercise the branch.
+    // assert.rejects matching the regex proves both that the executor
+    // catches the non-Error throw and that String(err) produced a
+    // recognizable message.
+    const executor = executorWithFn(PING, () => {
+      throw 'plain string thrown by handler'
+    })
+    const atcuteCtx = atcuteHttpCtx('http://localhost/xrpc/com.example.ping', { method: 'POST' })
+    const requestCtx = makeRequestCtx()
+
+    await assert.rejects(
+      async () => executor(atcuteCtx, requestCtx),
+      InternalServerError,
+      /plain string thrown by handler/
+    )
   })
 
   test('passes XrpcError through without re-wrapping', async ({ assert }) => {
@@ -194,70 +214,79 @@ test.group('createXrpcExecutor — HTTP path', (group) => {
       throw new InvalidRequestError('reason unrecognized')
     })
 
-    try {
-      await executor(
-        atcuteHttpCtx('http://localhost/xrpc/com.example.ping', { method: 'POST' }),
-        makeRequestCtx()
-      )
-      assert.fail('executor should have thrown')
-    } catch (err: any) {
-      assert.equal(err.constructor.name, 'InvalidRequestError')
-      assert.equal(err.errorName, 'InvalidRequest')
-    }
+    await assert.rejects(
+      async () => {
+        await executor(
+          atcuteHttpCtx('http://localhost/xrpc/com.example.ping', { method: 'POST' }),
+          makeRequestCtx()
+        )
+      },
+      InvalidRequestError,
+      /reason unrecognized/
+    )
   })
 
-  test('throws NotFoundError when no route matches the NSID', async ({ assert }) => {
+  test('throws InternalServerError when invoked for an unregistered NSID (defense-in-depth)', async ({
+    assert,
+  }) => {
+    // Atcute's handleNotFound hook (wired in providers/provider.ts)
+    // intercepts unregistered NSIDs before the executor — so in normal
+    // operation this branch never fires. The test invokes the executor
+    // directly (no atcute), exercising the type-narrowing-driven defensive
+    // branch. Treating it as InternalServerError reflects the real
+    // diagnosis if it ever DOES fire in production: atcute's registry is
+    // out of sync with the executor's operations map, which is a server
+    // bug, not a client error.
     const executor = createXrpcExecutor({
       operations: new Map(),
       serializer: new XrpcSerializer(),
       xrpc: noOpXrpc,
     })
 
-    try {
-      await executor(
-        atcuteHttpCtx('http://localhost/xrpc/com.example.unknown', { method: 'POST' }),
-        makeRequestCtx()
-      )
-      assert.fail('executor should have thrown')
-    } catch (err: any) {
-      assert.equal(err.constructor.name, 'NotFoundError')
-      assert.equal(err.errorName, 'NotFound')
-      assert.match(err.message, /no xrpc method registered/i)
-    }
+    await assert.rejects(
+      async () => {
+        await executor(
+          atcuteHttpCtx('http://localhost/xrpc/com.example.unknown', { method: 'POST' }),
+          makeRequestCtx()
+        )
+      },
+      InternalServerError,
+      /unregistered nsid 'com\.example\.unknown'/i
+    )
   })
 
-  test('crafted `/xrpc/__proto__` gets NotFoundError, not a prototype-lookup hit', async ({
+  test('crafted `/xrpc/__proto__` gets InternalServerError, not a prototype-lookup hit', async ({
     assert,
   }) => {
     // Map-backed ops: Map.get('__proto__') → undefined cleanly. Object lookup
     // would have returned Object.prototype (truthy) and crashed downstream.
+    // The error is InternalServerError (defense-in-depth), not the
+    // user-facing 'NotFound' shape — atcute's handleNotFound would have
+    // produced that before the executor saw the request.
     const executor = createXrpcExecutor({
       operations: new Map(),
       serializer: new XrpcSerializer(),
       xrpc: noOpXrpc,
     })
 
-    try {
+    await assert.rejects(async () => {
       await executor(
         atcuteHttpCtx('http://localhost/xrpc/__proto__', { method: 'POST' }),
         makeRequestCtx()
       )
-      assert.fail('executor should have thrown')
-    } catch (err: any) {
-      assert.equal(err.constructor.name, 'NotFoundError')
-    }
+    }, InternalServerError)
   })
 
   test('throws InternalServerError when invoked without a RequestContext', async ({ assert }) => {
     const executor = executorWithFn(PING, () => ({ ok: true }))
 
-    try {
-      await executor(atcuteHttpCtx('http://localhost/xrpc/com.example.ping', { method: 'POST' }))
-      assert.fail('executor should have thrown')
-    } catch (err: any) {
-      assert.equal(err.constructor.name, 'InternalServerError')
-      assert.match(err.message, /without a RequestContext/i)
-    }
+    await assert.rejects(
+      async () => {
+        await executor(atcuteHttpCtx('http://localhost/xrpc/com.example.ping', { method: 'POST' }))
+      },
+      InternalServerError,
+      /without a RequestContext/i
+    )
   })
 })
 

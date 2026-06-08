@@ -3,6 +3,7 @@ import { TestUtilsFactory } from '@adonisjs/core/factories/core/test_utils'
 import { getActiveTest } from '@japa/runner'
 import { createServer } from 'node:http'
 import type { AppEnvironments } from '@adonisjs/core/types/app'
+import { type ApplicationService } from '@adonisjs/core/types'
 
 export const BASE_URL = new URL('../tmp/', import.meta.url)
 export const IMPORTER = (filePath: string) => {
@@ -45,7 +46,7 @@ type SetupAppParameters = Parameters<IgnitorFactory['merge']>[0] & {
  */
 export async function setupApp(
   parameters: SetupAppParameters = {},
-  hooks: { beforeReady?: (app: any) => void | Promise<void> } = {}
+  hooks: { beforeReady?: (app: ApplicationService) => void | Promise<void> } = {}
 ) {
   const { environment, ...mergeParams } = parameters
   const factory = new IgnitorFactory()

@@ -132,14 +132,13 @@ export class XrpcServer {
     const router = await this.#app.container.make('router')
     this.#installRoutes(router.xrpc)
 
-    // WebSocket upgrade handler only installs when a Node HTTP server is
-    // attached. In tests that use `light-my-request` (no port binding) and
-    // in `console` / `ace` environments, `getNodeServer()` returns
-    // undefined — HTTP dispatch still works through Adonis's middleware,
-    // and there's just nothing to upgrade.
+    // WebSocket upgrade handler attaches to the Node HTTP server. The
+    // provider's allowlist gate (web + test) guarantees we only reach here
+    // in environments where Adonis has booted a real Node HTTP server, so
+    // `getNodeServer()` is guaranteed non-undefined — no defensive guard
+    // needed at this layer.
     const appServer = await this.#app.container.make('server')
-    const nodeServer = appServer.getNodeServer()
-    if (!nodeServer) return
+    const nodeServer = appServer.getNodeServer()!
     this.#installWebSocketHandler(nodeServer, appServer)
   }
 
@@ -206,12 +205,16 @@ export class XrpcServer {
         case 'xrpc_subscription':
           this.#router.addSubscription(route.lexicon, { handler })
           break
+        /* c8 ignore start — exhaustiveness branch; the `never` assignment is
+           the primary protection. Unreachable at runtime unless the type
+           system is bypassed (e.g., `as any`), which we don't test. */
         default: {
-          // Exhaustiveness — if the lexicon shape adds a new method type
-          // (unlikely; the spec hasn't changed in years), this surfaces a
-          // type error at compile time so we catch it before runtime.
-          throw new InternalServerError(`Unhandled XRPC lexicon type at install: ${String(type)}`)
+          const exhaustive: never = type
+          throw new InternalServerError(
+            `Unhandled XRPC lexicon type at install: ${String(exhaustive)}`
+          )
         }
+        /* c8 ignore stop */
       }
     }
   }
@@ -249,12 +252,12 @@ export class XrpcServer {
     // Send 1001 "Going Away" to every connected client. Snapshot to
     // Array.from before iterating — `.close()` may synchronously remove the
     // client from `wss.clients` and skew direct Set iteration.
+    // `ws`'s close() doesn't throw for any state we can be in here: 1001 is
+    // a valid code, the reason string is well-formed, and close-on-already-
+    // closing is a no-op. Network failures during the frame send are
+    // emitted as 'error' events on the WebSocket, not thrown synchronously.
     for (const client of Array.from(this.#ws.wss.clients)) {
-      try {
-        client.close(1001, 'server shutting down')
-      } catch {
-        // Already closed / closing — ignore.
-      }
+      client.close(1001, 'server shutting down')
     }
 
     // Wait briefly for clients to ack the close.
@@ -263,12 +266,11 @@ export class XrpcServer {
     // Force-terminate any survivors. `.terminate()` kills the TCP socket
     // without sending a frame. Survivors are misbehaving clients or
     // subscription handlers stuck past the grace window.
+    // Same rationale as the close() loop above: `ws`'s terminate() just
+    // destroys the socket and is safe to call on an already-terminated
+    // client (no-op). No defensive try/catch required.
     for (const client of Array.from(this.#ws.wss.clients)) {
-      try {
-        client.terminate()
-      } catch {
-        // Already terminated — ignore.
-      }
+      client.terminate()
     }
   }
 
@@ -294,7 +296,12 @@ export class XrpcServer {
  * `.unref()`'d timers remain.
  */
 async function waitForAllClientsClosed(wss: WebSocketServer, graceMs: number): Promise<void> {
+  /* c8 ignore start — `shutdown()` already checks `wss.clients.size === 0`
+     before calling this helper; the only path that reaches here with an
+     empty set is a race where every client closed between the outer check
+     and this call. Defensive guard, not a test-exercised branch. */
   if (wss.clients.size === 0) return
+  /* c8 ignore stop */
   return new Promise((resolve) => {
     const start = Date.now()
     const check = () => {

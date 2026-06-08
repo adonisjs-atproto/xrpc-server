@@ -1,35 +1,37 @@
 import { test } from '@japa/runner'
-import { subscription, object } from '@atcute/lexicons/validations'
+import { parse } from '@atcute/lexicons/validations'
 
 import { setupApp } from './helpers.js'
-import { injectXrpcSubscription } from '../src/test_utils.js'
+import { type InjectedXrpcSubscription, injectXrpcSubscription } from '../src/test_utils.js'
+import {
+  CONTROLLER_STREAM,
+  STREAM,
+  StreamController,
+  tick,
+  tickSchema,
+} from './fixtures/lexicons.js'
 
-// Build the subscription lexicon via atcute's helpers so the `~run`
-// fastpath codegen used by atcute's validation is present (a plain
-// object literal crashes safeParse — see dispatch.spec.ts comment).
-const STREAM = subscription('com.example.stream', {
-  params: object({}),
-  message: null,
-})
-
-// Separate lexicon for the controller-path test so both handlers can be
-// registered in the shared beforeEach without colliding on NSID.
-const CONTROLLER_STREAM = subscription('com.example.controller-stream', {
-  params: object({}),
-  message: null,
-})
-
-// Defined at module scope: moduleCaller detects classes via
-// Function.prototype.toString.call(value).startsWith('class '), which works
-// for a top-level class declaration but not for one constructed inline inside
-// a test closure (TS may down-emit it to a `var X = class { ... }` form that
-// the regex misses).
-class StreamController {
-  async *subscribe(_ctx: any) {
-    for (let n = 1; n <= 3; n++) {
-      yield { $type: 'com.example.controller-stream#tick', n }
-    }
+async function* StreamFn() {
+  for (let n = 1; n <= 3; n++) {
+    yield { $type: tick, value: n }
   }
+}
+
+async function parseStream(stream: InjectedXrpcSubscription) {
+  const received: number[] = []
+  const errors = []
+  for await (const frame of stream.messages()) {
+    if (frame.type === 'error') {
+      errors.push(frame)
+    } else {
+      let body = parse(tickSchema, frame.body)
+      received.push(body.value)
+    }
+    if (received.length === 3) break
+  }
+  await stream.close()
+
+  return { received, errors }
 }
 
 test.group('dispatch — WebSocket subscription end-to-end', (group) => {
@@ -44,12 +46,8 @@ test.group('dispatch — WebSocket subscription end-to-end', (group) => {
       {
         beforeReady: async (testApp) => {
           const router = await testApp.container.make('router')
-          router.xrpc.subscription(STREAM as any, async function* () {
-            for (let n = 1; n <= 3; n++) {
-              yield { $type: 'com.example.stream#tick', n }
-            }
-          })
-          router.xrpc.subscription(CONTROLLER_STREAM as any, [StreamController, 'subscribe'])
+          router.xrpc.subscription(STREAM, StreamFn)
+          router.xrpc.subscription(CONTROLLER_STREAM, [StreamController, 'subscribe'])
         },
       }
     )
@@ -62,16 +60,10 @@ test.group('dispatch — WebSocket subscription end-to-end', (group) => {
     const adonisServer = await app.container.make('server')
     const nodeServer = adonisServer.getNodeServer()!
 
-    const stream = await injectXrpcSubscription(nodeServer, STREAM as any)
-    const received: number[] = []
-    for await (const frame of stream.messages()) {
-      if (frame.type === 'message' && (frame.body as any)?.n !== undefined) {
-        received.push((frame.body as any).n)
-      }
-      if (received.length === 3) break
-    }
-    await stream.close()
+    const stream = await injectXrpcSubscription(nodeServer, STREAM)
+    const { received, errors } = await parseStream(stream)
 
+    assert.empty(errors)
     assert.deepEqual(received, [1, 2, 3])
   })
 
@@ -92,15 +84,9 @@ test.group('dispatch — WebSocket subscription end-to-end', (group) => {
     const nodeServer = adonisServer.getNodeServer()!
 
     const stream = await injectXrpcSubscription(nodeServer, CONTROLLER_STREAM as any)
-    const received: number[] = []
-    for await (const frame of stream.messages()) {
-      if (frame.type === 'message' && (frame.body as any)?.n !== undefined) {
-        received.push((frame.body as any).n)
-      }
-      if (received.length === 3) break
-    }
-    await stream.close()
+    const { received, errors } = await parseStream(stream)
 
+    assert.empty(errors)
     assert.deepEqual(received, [1, 2, 3])
   })
 
@@ -124,14 +110,12 @@ test.group('dispatch — WebSocket subscription end-to-end', (group) => {
     })
 
     const { injectWS } = await import('light-my-websocket')
-    try {
-      await injectWS(nodeServer, '/_vite/hmr')
-    } catch {
-      // Expected: sibling writes a non-101 response and destroys the socket,
-      // so injectWS rejects. That's fine — the sibling-saw-it assertion is
-      // the actual proof of fall-through.
-    }
 
+    // Expected: sibling writes a non-101 response and destroys the socket,
+    // so injectWS rejects. assert.rejects awaits the returned Promise — using
+    // assert.throws here is a no-op because the promise rejection happens on
+    // a future tick, not synchronously when the async fn is invoked.
+    await assert.rejects(() => injectWS(nodeServer, '/_vite/hmr'))
     assert.isTrue(sawSiblingUpgrade, 'sibling /_vite/hmr listener should have seen the upgrade')
   })
 })

@@ -48,23 +48,23 @@ export class XrpcRouter extends Macroable {
     super()
   }
 
-  procedure<L extends XrpcProcedureLexicon>(
+  procedure<L extends XrpcProcedureLexicon, T extends AnyConstructor = AnyConstructor>(
     lexicon: LexiconInput<L>,
-    handler: XrpcHandlerInput<L>
+    handler: XrpcHandlerInput<L, T>
   ): XrpcRoute {
     return this.#register(resolveLexicon(lexicon), handler)
   }
 
-  query<L extends XrpcQueryLexicon>(
+  query<L extends XrpcQueryLexicon, T extends AnyConstructor = AnyConstructor>(
     lexicon: LexiconInput<L>,
-    handler: XrpcHandlerInput<L>
+    handler: XrpcHandlerInput<L, T>
   ): XrpcRoute {
     return this.#register(resolveLexicon(lexicon), handler)
   }
 
-  subscription<L extends XrpcSubscriptionLexicon>(
+  subscription<L extends XrpcSubscriptionLexicon, T extends AnyConstructor = AnyConstructor>(
     lexicon: LexiconInput<L>,
-    handler: XrpcHandlerInput<L>
+    handler: XrpcHandlerInput<L, T>
   ): XrpcRoute {
     return this.#register(resolveLexicon(lexicon), handler)
   }
@@ -87,7 +87,10 @@ export class XrpcRouter extends Macroable {
     return new XrpcRouteGroup(ctx.routes)
   }
 
-  #register<L extends XrpcLexicon>(lexicon: L, handler: XrpcHandlerInput<L>): XrpcRoute {
+  #register<L extends XrpcLexicon, T extends AnyConstructor = AnyConstructor>(
+    lexicon: L,
+    handler: XrpcHandlerInput<L, T>
+  ): XrpcRoute {
     if (this.#committed) {
       throw new RuntimeException('Cannot register XRPC routes after commit')
     }
@@ -113,7 +116,9 @@ export class XrpcRouter extends Macroable {
     return route
   }
 
-  #normalizeHandler<L extends XrpcLexicon>(handler: XrpcHandlerInput<L>): NormalizedHandler<L> {
+  #normalizeHandler<L extends XrpcLexicon, T extends AnyConstructor = AnyConstructor>(
+    handler: XrpcHandlerInput<L, T>
+  ): NormalizedHandler<L> {
     if (typeof handler === 'function') {
       return { kind: 'function', fn: handler }
     }
@@ -146,7 +151,13 @@ export class XrpcRouter extends Macroable {
         >()
     return {
       kind: 'controller',
-      name: m.name ?? method,
+      // `m.name` is what fold's toHandleMethod sets — for eager
+      // (moduleCaller) it's always 'ClassName.method', for lazy
+      // (moduleImporter) it's `importFn.name` which is '' for the common
+      // `() => import('./controller')` arrow form. `||` (not `??`) catches
+      // the empty-string case so the stored name is always a useful
+      // identifier — surface area for a future xrpc:list ace command.
+      name: m.name || method,
       handle: m.handle,
     }
   }

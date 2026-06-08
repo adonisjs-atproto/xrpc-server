@@ -6,6 +6,8 @@ import { subscription, object } from '@atcute/lexicons/validations'
 
 import { injectXrpcSubscription } from '../src/test_utils.js'
 
+// NOTE: We're not actually asserting anything on this type, we're just testing
+// the URL is constructed correctly:
 const STREAM_LEX = subscription('com.example.stream', {
   params: object({}),
   message: null,
@@ -27,6 +29,28 @@ test.group('injectXrpcSubscription', () => {
     await stream.close()
 
     assert.equal(observedUrl, '/xrpc/com.example.stream?cursor=42')
+  })
+
+  test('constructs /xrpc/<nsid>?<params> URL from the lexicon + options with array values', async ({
+    assert,
+  }) => {
+    let observedUrl = ''
+    const wss = new WebSocketServer({ noServer: true })
+    const server = createServer()
+    server.on('upgrade', (req, socket, head) => {
+      observedUrl = req.url || ''
+      wss.handleUpgrade(req, socket, head, (ws) => ws.close())
+    })
+
+    const stream = await injectXrpcSubscription(server, STREAM_LEX as any, {
+      params: { dids: ['did:web:abc.example.org', 'did:web:efg.example.org'] },
+    })
+    await stream.close()
+
+    assert.equal(
+      observedUrl,
+      '/xrpc/com.example.stream?dids=did%3Aweb%3Aabc.example.org&dids=did%3Aweb%3Aefg.example.org'
+    )
   })
 
   test('decodes atproto frames (header + body CBOR) and yields typed messages', async ({

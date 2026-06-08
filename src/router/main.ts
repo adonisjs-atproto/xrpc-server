@@ -16,6 +16,7 @@ import type {
   RouteInfo,
   XrpcHandlerInput,
 } from './types.ts'
+import type { XrpcContext } from '../context/main.ts'
 import { XrpcRoute } from './route.ts'
 import { XrpcRouteGroup } from './group.ts'
 
@@ -49,21 +50,21 @@ export class XrpcRouter extends Macroable {
 
   procedure<L extends XrpcProcedureLexicon>(
     lexicon: LexiconInput<L>,
-    handler: XrpcHandlerInput
+    handler: XrpcHandlerInput<L>
   ): XrpcRoute {
     return this.#register(resolveLexicon(lexicon), handler)
   }
 
   query<L extends XrpcQueryLexicon>(
     lexicon: LexiconInput<L>,
-    handler: XrpcHandlerInput
+    handler: XrpcHandlerInput<L>
   ): XrpcRoute {
     return this.#register(resolveLexicon(lexicon), handler)
   }
 
   subscription<L extends XrpcSubscriptionLexicon>(
     lexicon: LexiconInput<L>,
-    handler: XrpcHandlerInput
+    handler: XrpcHandlerInput<L>
   ): XrpcRoute {
     return this.#register(resolveLexicon(lexicon), handler)
   }
@@ -86,7 +87,7 @@ export class XrpcRouter extends Macroable {
     return new XrpcRouteGroup(ctx.routes)
   }
 
-  #register(lexicon: XrpcLexicon, handler: XrpcHandlerInput): XrpcRoute {
+  #register<L extends XrpcLexicon>(lexicon: L, handler: XrpcHandlerInput<L>): XrpcRoute {
     if (this.#committed) {
       throw new RuntimeException('Cannot register XRPC routes after commit')
     }
@@ -94,13 +95,25 @@ export class XrpcRouter extends Macroable {
       throw new RuntimeException(`XRPC route already registered for NSID "${lexicon.nsid}"`)
     }
     const route = new XrpcRoute(lexicon.nsid)
-    this.#operations.set(lexicon.nsid, { lexicon, handler: this.#normalizeHandler(handler) })
+    // NormalizedHandler<L> is stored in the wider Map<string, RouteInfo> (L
+    // erased at storage). The executor narrows on lexicon.type at dispatch
+    // time, so the per-route L is recovered structurally.
+    // Cast: NormalizedHandler<L> → NormalizedHandler<any>. The map erases
+    // L at storage; we'd hope `any`'s bivariance accepts L-typed handlers
+    // directly, but XrpcContext<any> distributes to a concrete union that
+    // isn't a supertype of the per-route XrpcContext<L>, so the assignment
+    // is still rejected. Two-step `as unknown` cast acknowledges the round-
+    // trip — the executor recovers the shape via lexicon.type narrowing.
+    this.#operations.set(lexicon.nsid, {
+      lexicon,
+      handler: this.#normalizeHandler<L>(handler) as unknown as NormalizedHandler<any>,
+    })
     this.#routesByNsid.set(lexicon.nsid, route)
     this.#groupContext.at(-1)?.routes.push(route)
     return route
   }
 
-  #normalizeHandler(handler: XrpcHandlerInput): NormalizedHandler {
+  #normalizeHandler<L extends XrpcLexicon>(handler: XrpcHandlerInput<L>): NormalizedHandler<L> {
     if (typeof handler === 'function') {
       return { kind: 'function', fn: handler }
     }
@@ -111,13 +124,30 @@ export class XrpcRouter extends Macroable {
     }
     const [refOrLazy, method = 'handle'] = handler
 
+    // Parameterize toHandleMethod's Args generic to [XrpcContext<L>] so
+    // `m.handle` types its 2nd arg as the lexicon-specific concrete context
+    // subclass instead of the default `...args: any[]`. The executor invokes
+    // handle with exactly (resolver, ctx), supplying the per-request
+    // containerResolver; the runtime ctx is the matching concrete subclass
+    // (selected by route.lexicon.type narrowing), though at the executor's
+    // call site the static type is the wider XrpcContext<XrpcLexicon> because
+    // L is erased to the union when the handler is stored in the operations
+    // map. The T generic for the container passed to toHandleMethod is
+    // undefined, as we pass the container resolver at runtime not at load
+    // time.
     const m = isClass(refOrLazy)
-      ? moduleCaller(refOrLazy as AnyConstructor, method).toHandleMethod()
-      : moduleImporter(refOrLazy as AnyLazyImport, method).toHandleMethod()
+      ? moduleCaller(refOrLazy as AnyConstructor, method).toHandleMethod<
+          undefined,
+          [XrpcContext<L>]
+        >()
+      : moduleImporter(refOrLazy as AnyLazyImport, method).toHandleMethod<
+          undefined,
+          [XrpcContext<L>]
+        >()
     return {
       kind: 'controller',
       name: m.name ?? method,
-      handle: m.handle as (resolver: any, ctx: any) => Promise<unknown>,
+      handle: m.handle,
     }
   }
 

@@ -12,6 +12,26 @@ const STREAM = subscription('com.example.stream', {
   message: null,
 })
 
+// Separate lexicon for the controller-path test so both handlers can be
+// registered in the shared beforeEach without colliding on NSID.
+const CONTROLLER_STREAM = subscription('com.example.controller-stream', {
+  params: object({}),
+  message: null,
+})
+
+// Defined at module scope: moduleCaller detects classes via
+// Function.prototype.toString.call(value).startsWith('class '), which works
+// for a top-level class declaration but not for one constructed inline inside
+// a test closure (TS may down-emit it to a `var X = class { ... }` form that
+// the regex misses).
+class StreamController {
+  async *subscribe(_ctx: any) {
+    for (let n = 1; n <= 3; n++) {
+      yield { $type: 'com.example.controller-stream#tick', n }
+    }
+  }
+}
+
 test.group('dispatch — WebSocket subscription end-to-end', (group) => {
   let app: any
   group.each.setup(async () => {
@@ -29,6 +49,7 @@ test.group('dispatch — WebSocket subscription end-to-end', (group) => {
               yield { $type: 'com.example.stream#tick', n }
             }
           })
+          router.xrpc.subscription(CONTROLLER_STREAM as any, [StreamController, 'subscribe'])
         },
       }
     )
@@ -42,6 +63,35 @@ test.group('dispatch — WebSocket subscription end-to-end', (group) => {
     const nodeServer = adonisServer.getNodeServer()!
 
     const stream = await injectXrpcSubscription(nodeServer, STREAM as any)
+    const received: number[] = []
+    for await (const frame of stream.messages()) {
+      if (frame.type === 'message' && (frame.body as any)?.n !== undefined) {
+        received.push((frame.body as any).n)
+      }
+      if (received.length === 3) break
+    }
+    await stream.close()
+
+    assert.deepEqual(received, [1, 2, 3])
+  })
+
+  test('controller-form subscription handler ([Controller, method] tuple) dispatches correctly', async ({
+    assert,
+  }) => {
+    // Regression test: the controller path goes through fold's toHandleMethod,
+    // which wraps the method call in an always-async `handle`. Before the
+    // executor's invokeHandler was made async + wrapSubscriptionIterator was
+    // taught to await the iterable, wrapSubscriptionIterator called
+    // [Symbol.asyncIterator]() on the unwrapped Promise<AsyncIterable>
+    // (TypeError). Atcute closed the WebSocket immediately and routed the
+    // error through our makeSocketErrorObserver (providers/provider.ts),
+    // which surfaced it as an InternalServerError via the consumer's
+    // ExceptionHandler — clients saw an instant close with no useful data,
+    // and the only signal anything went wrong was the ISE in server logs.
+    const adonisServer = await app.container.make('server')
+    const nodeServer = adonisServer.getNodeServer()!
+
+    const stream = await injectXrpcSubscription(nodeServer, CONTROLLER_STREAM as any)
     const received: number[] = []
     for await (const frame of stream.messages()) {
       if (frame.type === 'message' && (frame.body as any)?.n !== undefined) {

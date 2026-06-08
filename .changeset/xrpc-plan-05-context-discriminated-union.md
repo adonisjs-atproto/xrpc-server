@@ -2,13 +2,23 @@
 '@thisismissem/adonisjs-atproto-xrpc': patch
 ---
 
-**Plan 05 — Context discriminated-union refactor**
+**Typed handler context** — `ctx` in query and procedure handlers is now `XrpcHttpContext<L>`; `ctx` in subscription handlers is now `XrpcSubscriptionContext<L>`. Accessing `.response` (HTTP) or `.stream` (subscription) no longer requires a cast when the lexicon kind is known at the call site.
 
-Restructures `XrpcContext` as a discriminated union: a non-generic `XrpcOperationContext` abstract base + `XrpcHttpContext<L>` (query + procedure) + `XrpcSubscriptionContext<L>`.
+The `XrpcContext<L>` type alias continues to resolve to the correct concrete subclass — existing handler signatures are unchanged.
 
-- The public `XrpcContext<L>` symbol becomes a conditional type alias that resolves to the concrete subclass; handler signatures `(ctx: XrpcContext<typeof myLex>) => ...` work unchanged.
-- `XrpcOperationContext` exposes the shared `AsyncLocalStorage` and cross-cutting fields (`request`, `signal`, `logger`, `containerResolver`, `requestId`).
-- `XrpcHttpContext` adds `.lexicon`, `.params`, `.input`, `.response` (query/procedure only).
-- `XrpcSubscriptionContext` adds `.lexicon`, `.params`, `.stream` (subscription only).
-- Type-guard predicates `isHttpContext` / `isSubscriptionContext` exported from the package root for narrowing wide-union references.
-- `XrpcContextFactory.create()` overloaded per lexicon kind; `factories/xrpc` subpath returns the concrete subclass type at the call site.
+**Type narrowing helpers** — for code that holds a wide `XrpcOperationContext` reference (e.g. inside an `ExceptionHandler`):
+
+```ts
+import { isHttpContext, isSubscriptionContext } from '@thisismissem/adonisjs-atproto-xrpc'
+
+async report(error: unknown, ctx: XrpcOperationContext | null) {
+  if (ctx && isHttpContext(ctx)) {
+    // ctx.response, ctx.input, ctx.params available here
+  }
+  if (ctx && isSubscriptionContext(ctx)) {
+    // ctx.stream available here
+  }
+}
+```
+
+**New exports** — `XrpcOperationContext`, `XrpcHttpContext`, `XrpcSubscriptionContext`, `isHttpContext`, `isSubscriptionContext` are now exported from the package root alongside `XrpcContext`.

@@ -2,11 +2,14 @@
 '@thisismissem/adonisjs-atproto-xrpc': minor
 ---
 
-**Plan 04 — Provider: XrpcService, error reporting, and graceful shutdown**
+**Error handler registration** — register a custom `ExceptionHandler` via the `xrpc` service in `start/kernel.ts`:
 
-New consumer-facing additions:
+```ts
+import xrpc from '@thisismissem/adonisjs-atproto-xrpc/services/xrpc'
 
-- **`XrpcService`** (`services/xrpc` singleton + `export type` from the main entrypoint) — consumer-facing facade for registering an error handler via `xrpc.errorHandler(() => import('#exceptions/xrpc_handler'))`.
-- **`ExceptionHandler`** base class now wired end-to-end: the provider installs atcute `handleException` / `onSocketError` hooks that invoke the registered handler's `report()` + `handle()` methods with REPORTED-symbol deduplication to prevent double-invocation.
-- **Graceful WebSocket shutdown** — `XrpcServer.shutdown(graceMs?)` sends 1001 close frames to connected subscription clients, waits up to `graceMs` for acks, then force-terminates survivors. Hooked into `app.terminating()` in the correct LIFO order so WS clients drain before the HTTP server closes.
-- **`services/xrpc` subpath** — top-level-await singleton accessor, mirrors `@adonisjs/core/services/server`.
+xrpc.errorHandler(() => import('#exceptions/xrpc_handler'))
+```
+
+The handler's `report()` and `handle()` methods are called for both HTTP operation errors and WebSocket subscription errors. Errors already handled by `report()` are not double-reported if they propagate to `handle()`.
+
+**Graceful WebSocket shutdown** — on `app.terminate()`, connected subscription clients receive a 1001 (Going Away) close frame and the server waits up to a configurable grace period before force-closing. No consumer configuration needed; the provider wires this automatically.

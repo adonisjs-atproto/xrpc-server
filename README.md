@@ -5,7 +5,7 @@ This package provides a small [Adonis.js](https://adonisjs.com) adapter for buil
 ## Installation
 
 ```sh
-node ace add @thisismissem/adonisjs-atproto-xrpc
+node ace add @adonisjs-atproto/xrpc-server
 ```
 
 ### Configuring
@@ -13,5 +13,5 @@ node ace add @thisismissem/adonisjs-atproto-xrpc
 If you didn't use `node ace add` you can later run the configuration using:
 
 ```sh
-node ace configure @thisismissem/adonisjs-atproto-xrpc
+node ace configure @adonisjs-atproto/xrpc-server
 ```

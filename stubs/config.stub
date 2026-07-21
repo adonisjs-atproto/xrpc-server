@@ -1,7 +1,7 @@
 {{{
   exports({ to: app.configPath('atproto_xrpc.ts') })
 }}}
-import { defineConfig } from '@thisismissem/adonisjs-atproto-xrpc'
+import { defineConfig } from '@adonisjs-atproto/xrpc-server'
 import env from '#start/env'
 
 export default defineConfig({

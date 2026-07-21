@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this package is
 
-`@thisismissem/adonisjs-atproto-xrpc` is an **AdonisJS v7+ provider** that bridges AdonisJS's HTTP/router conventions to AT Protocol XRPC server-side dispatch, wrapping [`@atcute/xrpc-server`](https://www.npmjs.com/package/@atcute/xrpc-server) and its Node WebSocket adapter. It is the framework half; consumers (e.g. `@thisismissem/adonisjs-atproto-labeler`) bring their own lexicons and handlers.
+`@adonisjs-atproto/xrpc-server` is an **AdonisJS v7+ provider** that bridges AdonisJS's HTTP/router conventions to AT Protocol XRPC server-side dispatch, wrapping [`@atcute/xrpc-server`](https://www.npmjs.com/package/@atcute/xrpc-server) and its Node WebSocket adapter. It is the framework half; consumers (e.g. `@adonisjs-atproto/labeler`) bring their own lexicons and handlers.
 
 **Status: brand-new, mostly scaffolding.** A single initial commit. The shape is set; almost no behaviour is implemented yet. Before doing non-trivial work, read the canonical design spec:
 

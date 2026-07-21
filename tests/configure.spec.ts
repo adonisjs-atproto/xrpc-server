@@ -17,7 +17,7 @@ import Configure from '@adonisjs/core/commands/configure'
 // TODO: Can this be replaced with helpers.ts?
 const BASE_URL = new URL('../tmp/configure/', import.meta.url)
 
-const PACKAGE_NAME = '@thisismissem/adonisjs-atproto-xrpc'
+const PACKAGE_NAME = '@adonisjs-atproto/xrpc-server'
 const INSTALL_PROMPT = `Do you want to install additional packages required by "${PACKAGE_NAME}"?`
 
 test.group('Configure', (group) => {

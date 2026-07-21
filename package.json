@@ -1,5 +1,5 @@
 {
-  "name": "@thisismissem/adonisjs-atproto-xrpc",
+  "name": "@adonisjs-atproto/xrpc-server",
   "description": "Adonis.js provider for building an AT Protocol XRPC service",
   "version": "0.0.0",
   "engines": {

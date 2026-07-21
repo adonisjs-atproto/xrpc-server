@@ -16,7 +16,7 @@ import type Configure from '@adonisjs/core/commands/configure'
 import { stubsRoot } from './stubs/main.ts'
 
 export async function configure(command: Configure) {
-  const packageName = '@thisismissem/adonisjs-atproto-xrpc'
+  const packageName = '@adonisjs-atproto/xrpc-server'
 
   const codemods = await command.createCodemods()
 
